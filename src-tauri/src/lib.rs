@@ -955,13 +955,13 @@ fn windows_setup_script_path() -> Result<PathBuf, String> {
 
 fn windows_setup_script_text() -> String {
     format!(
-        r#"$ErrorActionPreference = "Stop"
-
-param(
+        r#"param(
   [string]$DownloaderDir = "",
   [string]$DownloaderRepoUrl = "",
   [switch]$RunCookieLogin
 )
+
+$ErrorActionPreference = "Stop"
 
 function Test-Command([string]$Name) {{
   return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
