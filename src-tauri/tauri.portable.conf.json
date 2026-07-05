@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "active": false,
+    "windows": {
+      "webviewInstallMode": {
+        "type": "fixedRuntime",
+        "path": "Microsoft.WebView2.FixedVersionRuntime"
+      }
+    }
+  }
+}

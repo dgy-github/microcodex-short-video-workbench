@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MicrocodeX Short Video Workbench",
+  "version": "0.1.0-alpha.1",
+  "identifier": "com.microcodex.shortvideoworkbench",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5180",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "MicrocodeX Short Video Workbench",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 760,
+        "zoomHotkeysEnabled": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "MicrocodeX",
+    "homepage": "https://example.invalid/microcodex-short-video-workbench",
+    "license": "MIT",
+    "category": "Utility",
+    "shortDescription": "A Windows workbench for short-video material extraction and review.",
+    "longDescription": "MicrocodeX Short Video Workbench helps operators import short videos, extract reusable assets, edit material packs, review generated videos, and compare competitors without directly calling expensive generation APIs.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../bundle-assets/windows-runtime/": "bundle/windows-runtime/"
+    },
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      },
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "currentUser",
+        "languages": ["English", "SimpChinese"],
+        "displayLanguageSelector": true,
+        "compression": "lzma",
+        "startMenuFolder": "MicrocodeX Short Video Workbench"
+      }
+    }
+  }
+}

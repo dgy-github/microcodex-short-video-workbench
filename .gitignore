@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-portable/
+.svelte-kit/
+
+src-tauri/target/
+bundle-assets/windows-runtime/
+
+*.log
+.DS_Store
+Thumbs.db
+
+resources/tmp/
+tmp/

@@ -1,0 +1,27 @@
+{
+  "name": "microcodex-short-video-workbench",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:build": "tauri build --target x86_64-pc-windows-gnu",
+    "tauri:installer": "tauri build --target x86_64-pc-windows-gnu --bundles nsis",
+    "tauri:portable": "powershell -ExecutionPolicy Bypass -File .\\scripts\\build_portable.ps1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.8.0",
+    "@tauri-apps/plugin-dialog": "~2.3.2"
+  },
+  "devDependencies": {
+    "@tsconfig/svelte": "^5.0.4",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@tauri-apps/cli": "2.8.0",
+    "svelte": "^5.39.6",
+    "typescript": "^5.9.2",
+    "vite": "^6.3.5"
+  }
+}
