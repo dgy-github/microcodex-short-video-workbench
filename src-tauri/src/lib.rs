@@ -1,7 +1,7 @@
 use ncx_video_agent::{
     encode_frame, extract_keyframes, extract_keyframes_scaled, request_reverse_prompt,
     request_subtitle_ocr, request_transcription, validate_video_file_l0, AsrEndpoint,
-    P1ExternalConfig, OCR_MAX_WIDTH, VlEndpoint,
+    P1ExternalConfig, VlEndpoint, OCR_MAX_WIDTH,
 };
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -676,7 +676,10 @@ fn portable_root_dir() -> Option<PathBuf> {
     }
 
     let exe_dir = current_exe_dir()?;
-    exe_dir.join(PORTABLE_MARKER_FILE).is_file().then_some(exe_dir)
+    exe_dir
+        .join(PORTABLE_MARKER_FILE)
+        .is_file()
+        .then_some(exe_dir)
 }
 
 fn app_config_dir() -> Result<PathBuf, String> {
@@ -930,7 +933,10 @@ fn prepare_bundled_runtime(app: &AppHandle) -> Result<(), String> {
     };
 
     std::env::set_var(BUNDLED_RUNTIME_ROOT_ENV, &runtime_root);
-    write_text_file(&bundled_runtime_hint_path()?, &runtime_root.display().to_string())?;
+    write_text_file(
+        &bundled_runtime_hint_path()?,
+        &runtime_root.display().to_string(),
+    )?;
 
     let source_downloader = runtime_root.join("douyin-downloader");
     if source_downloader.is_dir() {
@@ -1129,7 +1135,9 @@ fn run_command_output(command: &mut Command, label: &str) -> Result<Output, Stri
 fn output_text(output: &Output) -> String {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    format!("{}\n{}", stdout.trim(), stderr.trim()).trim().to_string()
+    format!("{}\n{}", stdout.trim(), stderr.trim())
+        .trim()
+        .to_string()
 }
 
 fn copy_with_overwrite(from: &Path, to: &Path) -> Result<(), String> {
@@ -1236,7 +1244,10 @@ fn open_in_explorer(path: &Path, select_target: bool) -> Result<(), String> {
         return Ok(());
     }
     #[allow(unreachable_code)]
-    Err(format!("opening paths is not supported on this OS: {}", path.display()))
+    Err(format!(
+        "opening paths is not supported on this OS: {}",
+        path.display()
+    ))
 }
 
 fn is_video_file(path: &Path) -> bool {
@@ -1284,7 +1295,10 @@ fn collect_files_recursive(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), 
     Ok(())
 }
 
-fn find_first_matching_file(root: &Path, predicate: fn(&Path) -> bool) -> Result<Option<PathBuf>, String> {
+fn find_first_matching_file(
+    root: &Path,
+    predicate: fn(&Path) -> bool,
+) -> Result<Option<PathBuf>, String> {
     let mut files = Vec::new();
     collect_files_recursive(root, &mut files)?;
     files.sort();
@@ -1371,7 +1385,9 @@ fn has_playwright_chromium_install() -> bool {
         .any(|name| name.starts_with("chromium-"))
 }
 
-fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<EnvironmentHealthReport, String> {
+fn build_environment_report(
+    settings: &RuntimeSettingsFile,
+) -> Result<EnvironmentHealthReport, String> {
     let helper_script_path = ensure_windows_setup_script()?;
     let mut items = Vec::new();
     let bundled_runtime = bundled_runtime_root();
@@ -1379,7 +1395,12 @@ fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<Environmen
     items.push(EnvironmentCheckItem {
         key: "windows_platform".to_string(),
         label: "Windows 运行平台".to_string(),
-        status: if cfg!(target_os = "windows") { "ok" } else { "missing" }.to_string(),
+        status: if cfg!(target_os = "windows") {
+            "ok"
+        } else {
+            "missing"
+        }
+        .to_string(),
         detail: if cfg!(target_os = "windows") {
             "当前应用已在 Windows 上运行。".to_string()
         } else {
@@ -1393,7 +1414,8 @@ fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<Environmen
         label: "WebView2 Runtime".to_string(),
         status: "ok".to_string(),
         detail: "当前桌面窗口已成功启动，可视为 WebView2 已可用。".to_string(),
-        action_hint: "NSIS 安装器已配置 bootstrapper；离线环境建议预装 Evergreen Runtime。".to_string(),
+        action_hint: "NSIS 安装器已配置 bootstrapper；离线环境建议预装 Evergreen Runtime。"
+            .to_string(),
     });
 
     items.push(EnvironmentCheckItem {
@@ -1410,7 +1432,12 @@ fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<Environmen
         }
         .to_string(),
         detail: portable_root_dir()
-            .map(|root| format!("当前运行在绿色便携模式下，数据目录为 {}。", root.join("data").display()))
+            .map(|root| {
+                format!(
+                    "当前运行在绿色便携模式下，数据目录为 {}。",
+                    root.join("data").display()
+                )
+            })
             .unwrap_or_else(|| "当前是常规安装/开发模式，默认把数据写入 APPDATA。".to_string()),
         action_hint: "若要做绿色便携版，请从带 portable.mode 标记文件的目录启动程序。".to_string(),
     });
@@ -1446,12 +1473,21 @@ fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<Environmen
     items.push(ffmpeg_item);
 
     let python_program = resolve_python_program();
-    let python_item = match probe_command(&python_program, &["--version"], None, Some(apply_python_command_env)) {
+    let python_item = match probe_command(
+        &python_program,
+        &["--version"],
+        None,
+        Some(apply_python_command_env),
+    ) {
         Ok(text) => EnvironmentCheckItem {
             key: "python".to_string(),
             label: "Python 命令".to_string(),
             status: "ok".to_string(),
-            detail: format!("Python 可用：{}（{}）。", line_preview(&text), python_program.display()),
+            detail: format!(
+                "Python 可用：{}（{}）。",
+                line_preview(&text),
+                python_program.display()
+            ),
             action_hint: "无需处理。".to_string(),
         },
         Err(err) => EnvironmentCheckItem {
@@ -1459,7 +1495,9 @@ fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<Environmen
             label: "Python 命令".to_string(),
             status: "missing".to_string(),
             detail: format!("当前无法直接执行 python：{}。", line_preview(&err)),
-            action_hint: "优先使用带内置运行包的安装器；否则安装 Python，并确保命令行可直接运行 python。".to_string(),
+            action_hint:
+                "优先使用带内置运行包的安装器；否则安装 Python，并确保命令行可直接运行 python。"
+                    .to_string(),
         },
     };
     items.push(python_item);
@@ -1471,17 +1509,15 @@ fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<Environmen
             label: "Douyin Downloader 目录".to_string(),
             status: "ok".to_string(),
             detail: format!("已找到目录：{}。", path.display()),
-            action_hint: format!(
-                "如需改路径，可设置环境变量 {}。",
-                DOUYIN_DOWNLOADER_DIR_ENV
-            ),
+            action_hint: format!("如需改路径，可设置环境变量 {}。", DOUYIN_DOWNLOADER_DIR_ENV),
         }),
         Err(err) => items.push(EnvironmentCheckItem {
             key: "douyin_downloader_dir".to_string(),
             label: "Douyin Downloader 目录".to_string(),
             status: "missing".to_string(),
             detail: err.clone(),
-            action_hint: "把准备好的 douyin-downloader 放到默认目录，或设置环境变量指向实际路径。".to_string(),
+            action_hint: "把准备好的 douyin-downloader 放到默认目录，或设置环境变量指向实际路径。"
+                .to_string(),
         }),
     }
 
@@ -1501,14 +1537,19 @@ fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<Environmen
                         label: "Downloader 配置与 Cookie".to_string(),
                         status: status.to_string(),
                         detail: if tokens.is_empty() {
-                            format!("已找到 config.yml，但还没识别到常用 Cookie token：{}。", config_path.display())
+                            format!(
+                                "已找到 config.yml，但还没识别到常用 Cookie token：{}。",
+                                config_path.display()
+                            )
                         } else {
                             format!(
                                 "已找到 config.yml，并识别到 Cookie token：{}。",
                                 tokens.join(", ")
                             )
                         },
-                        action_hint: "若单条视频下载失败，先在 downloader 目录运行一次 cookie 登录流程。".to_string(),
+                        action_hint:
+                            "若单条视频下载失败，先在 downloader 目录运行一次 cookie 登录流程。"
+                                .to_string(),
                     });
                 }
                 Err(err) => items.push(EnvironmentCheckItem {
@@ -1555,7 +1596,12 @@ fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<Environmen
         items.push(EnvironmentCheckItem {
             key: "playwright_chromium".to_string(),
             label: "Playwright Chromium 浏览器".to_string(),
-            status: if has_playwright_chromium_install() { "ok" } else { "missing" }.to_string(),
+            status: if has_playwright_chromium_install() {
+                "ok"
+            } else {
+                "missing"
+            }
+            .to_string(),
             detail: if bundled_playwright_browsers_dir().is_some() {
                 "已检测到安装包内置的 Playwright Chromium 浏览器。".to_string()
             } else if has_playwright_chromium_install() {
@@ -1563,7 +1609,8 @@ fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<Environmen
             } else {
                 "未检测到 Playwright Chromium 浏览器安装目录。".to_string()
             },
-            action_hint: "运行内置引导脚本，或执行 python -m playwright install chromium。".to_string(),
+            action_hint: "运行内置引导脚本，或执行 python -m playwright install chromium。"
+                .to_string(),
         });
     }
 
@@ -1624,24 +1671,87 @@ fn build_environment_report(settings: &RuntimeSettingsFile) -> Result<Environmen
     })
 }
 
+fn trim_share_url_token(candidate: &str) -> &str {
+    candidate.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '"' | '\''
+                | '“'
+                | '”'
+                | '<'
+                | '>'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | ','
+                | '，'
+                | '。'
+                | ';'
+                | '；'
+                | '!'
+                | '！'
+                | '?'
+                | '？'
+        )
+    })
+}
+
+fn looks_like_douyin_url(candidate: &str) -> bool {
+    let lower = candidate.to_ascii_lowercase();
+    let starts_like_url = lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("v.douyin.com/")
+        || lower.starts_with("v.iesdouyin.com/")
+        || lower.starts_with("www.douyin.com/")
+        || lower.starts_with("douyin.com/")
+        || lower.starts_with("iesdouyin.com/");
+
+    starts_like_url && (lower.contains("douyin.com/") || lower.contains("iesdouyin.com/"))
+}
+
+fn extract_douyin_url_from_share_text(value: &str) -> Option<String> {
+    for token in value.split_whitespace() {
+        let token = trim_share_url_token(token);
+        if token.is_empty() || !looks_like_douyin_url(token) {
+            continue;
+        }
+        if token.starts_with("http://") || token.starts_with("https://") {
+            return Some(token.to_string());
+        }
+        return Some(format!("https://{}", token.trim_start_matches('/')));
+    }
+    None
+}
+
+fn summarize_douyin_download_issue(output_text: &str) -> Option<String> {
+    let lower = output_text.to_ascii_lowercase();
+    if lower.contains("failed to parse url") {
+        Some(
+            "无法从输入内容里解析出抖音链接。请粘贴分享文案中的 https://... 链接，或直接粘贴抖音视频链接。"
+                .to_string(),
+        )
+    } else if lower.contains("failed to resolve short url") {
+        Some("抖音短链解析失败，请重新复制链接后再试。".to_string())
+    } else if lower.contains("下载失败或链接无效") {
+        Some("抖音下载失败，链接可能无效，或分享文案没有被正确解析。".to_string())
+    } else {
+        None
+    }
+}
+
 fn latest_downloaded_video(root: &Path, started_at: SystemTime) -> Result<PathBuf, String> {
     let mut files = Vec::new();
     collect_files_recursive(root, &mut files)?;
     let mut best_after: Option<(SystemTime, PathBuf)> = None;
-    let mut best_any: Option<(SystemTime, PathBuf)> = None;
 
     for path in files.into_iter().filter(|path| is_video_file(path)) {
         let modified = path
             .metadata()
             .and_then(|metadata| metadata.modified())
             .unwrap_or(UNIX_EPOCH);
-        if best_any
-            .as_ref()
-            .map(|(current, _)| modified > *current)
-            .unwrap_or(true)
-        {
-            best_any = Some((modified, path.clone()));
-        }
         if modified >= started_at
             && best_after
                 .as_ref()
@@ -1653,9 +1763,8 @@ fn latest_downloaded_video(root: &Path, started_at: SystemTime) -> Result<PathBu
     }
 
     best_after
-        .or(best_any)
         .map(|(_, path)| path)
-        .ok_or_else(|| format!("no downloaded video found under {}", root.display()))
+        .ok_or_else(|| format!("no newly downloaded video found under {}", root.display()))
 }
 
 fn ingest_local_video(source_value: &str, job_root: &Path) -> Result<Vec<String>, String> {
@@ -1677,13 +1786,20 @@ fn ingest_local_video(source_value: &str, job_root: &Path) -> Result<Vec<String>
         "original_path": path_string(&source),
         "source_video": path_string(&target),
     });
-    write_json_file(&job_input_dir(job_root).join("source_metadata.json"), &metadata)?;
+    write_json_file(
+        &job_input_dir(job_root).join("source_metadata.json"),
+        &metadata,
+    )?;
     Ok(vec![format!("已导入本地视频 {}", source.display())])
 }
 
 fn ingest_douyin_video(source_value: &str, job_root: &Path) -> Result<Vec<String>, String> {
     ensure_job_layout(job_root)?;
     let downloader_dir = resolve_douyin_downloader_dir()?;
+    let download_url = extract_douyin_url_from_share_text(source_value).ok_or_else(|| {
+        "未从输入内容里找到可用的抖音链接。请粘贴分享文案中的 https://... 链接，或直接粘贴抖音视频链接。"
+            .to_string()
+    })?;
     let started_at = SystemTime::now();
     let mut command = Command::new(resolve_python_program());
     command
@@ -1692,22 +1808,29 @@ fn ingest_douyin_video(source_value: &str, job_root: &Path) -> Result<Vec<String
         .arg("-c")
         .arg("config.yml")
         .arg("-u")
-        .arg(source_value);
+        .arg(&download_url);
     apply_python_command_env(&mut command);
     let output = run_command_output(&mut command, "douyin downloader")?;
     let log_path = job_input_dir(job_root).join("download_log.txt");
-    write_text_file(&log_path, &output_text(&output))?;
+    let download_output_text = output_text(&output);
+    write_text_file(&log_path, &download_output_text)?;
     if !output.status.success() {
         return Err(format!(
             "douyin downloader failed: {}",
-            output_text(&output)
+            download_output_text
         ));
+    }
+    if let Some(message) = summarize_douyin_download_issue(&download_output_text) {
+        return Err(format!("{message}\n下载日志: {}", log_path.display()));
     }
 
     let downloaded_video = latest_downloaded_video(&downloader_dir.join("Downloaded"), started_at)?;
-    let source_dir = downloaded_video
-        .parent()
-        .ok_or_else(|| format!("downloaded file has no parent: {}", downloaded_video.display()))?;
+    let source_dir = downloaded_video.parent().ok_or_else(|| {
+        format!(
+            "downloaded file has no parent: {}",
+            downloaded_video.display()
+        )
+    })?;
     let video_ext = downloaded_video
         .extension()
         .and_then(|ext| ext.to_str())
@@ -1719,17 +1842,28 @@ fn ingest_douyin_video(source_value: &str, job_root: &Path) -> Result<Vec<String
     collect_files_recursive(source_dir, &mut source_dir_files)?;
     if let Some(metadata_file) = source_dir_files.iter().find(|path| {
         path.extension().and_then(|ext| ext.to_str()) == Some("json")
-            && path.file_name().and_then(|name| name.to_str()).unwrap_or_default().contains("_data")
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .contains("_data")
     }) {
-        copy_with_overwrite(metadata_file, &job_input_dir(job_root).join("source_metadata.json"))?;
+        copy_with_overwrite(
+            metadata_file,
+            &job_input_dir(job_root).join("source_metadata.json"),
+        )?;
     } else {
         let metadata = json!({
             "platform": "douyin",
             "downloaded_at_ms": now_ms(),
-            "source_url": source_value,
+            "source_input": source_value,
+            "source_url": download_url,
             "downloaded_video": path_string(&downloaded_video),
         });
-        write_json_file(&job_input_dir(job_root).join("source_metadata.json"), &metadata)?;
+        write_json_file(
+            &job_input_dir(job_root).join("source_metadata.json"),
+            &metadata,
+        )?;
     }
     if let Some(cover_file) = source_dir_files.iter().find(|path| is_image_file(path)) {
         let cover_ext = cover_file
@@ -1755,20 +1889,27 @@ fn ingest_douyin_video(source_value: &str, job_root: &Path) -> Result<Vec<String
     write_json_file(
         &job_input_dir(job_root).join("download_manifest.json"),
         &json!({
-            "source_url": source_value,
+            "source_input": source_value,
+            "source_url": download_url,
             "downloaded_video": path_string(&downloaded_video),
             "source_dir": path_string(source_dir),
             "download_log": path_string(&log_path),
         }),
     )?;
 
-    Ok(vec![format!("抖音视频已下载并复制到 {}", copied_video.display())])
+    Ok(vec![format!(
+        "抖音视频已下载并复制到 {}",
+        copied_video.display()
+    )])
 }
 
 fn source_video_path(job_root: &Path) -> Result<PathBuf, String> {
     let input_dir = job_input_dir(job_root);
     let Some(path) = find_first_matching_file(&input_dir, is_video_file)? else {
-        return Err(format!("source video is missing under {}", input_dir.display()));
+        return Err(format!(
+            "source video is missing under {}",
+            input_dir.display()
+        ));
     };
     Ok(path)
 }
@@ -1804,7 +1945,10 @@ fn build_asr_endpoint(settings: &RuntimeSettingsFile) -> Result<AsrEndpoint, Str
     })
 }
 
-fn build_text_endpoint(settings: &RuntimeSettingsFile, item: &JobWorkItem) -> Result<TextEndpoint, String> {
+fn build_text_endpoint(
+    settings: &RuntimeSettingsFile,
+    item: &JobWorkItem,
+) -> Result<TextEndpoint, String> {
     if settings.text_provider.api_key.trim().is_empty() {
         return Err("Text API key is missing in runtime settings.".to_string());
     }
@@ -1812,7 +1956,9 @@ fn build_text_endpoint(settings: &RuntimeSettingsFile, item: &JobWorkItem) -> Re
     let model = if !item.effective_text_model.trim().is_empty() {
         item.effective_text_model.clone()
     } else {
-        effective_text_preset(settings, &item.text_tier).model.clone()
+        effective_text_preset(settings, &item.text_tier)
+            .model
+            .clone()
     };
     let base_url = if !item.effective_text_base_url.trim().is_empty() {
         item.effective_text_base_url.clone()
@@ -1834,7 +1980,10 @@ fn build_text_endpoint(settings: &RuntimeSettingsFile, item: &JobWorkItem) -> Re
     })
 }
 
-fn build_text_endpoint_for_tier(settings: &RuntimeSettingsFile, tier: &str) -> Result<TextEndpoint, String> {
+fn build_text_endpoint_for_tier(
+    settings: &RuntimeSettingsFile,
+    tier: &str,
+) -> Result<TextEndpoint, String> {
     if settings.text_provider.api_key.trim().is_empty() {
         return Err("Text API key is missing in runtime settings.".to_string());
     }
@@ -1898,11 +2047,15 @@ fn request_structured_competitor_report(
         .text()
         .map_err(|e| format!("read DeepSeek competitor report response failed: {e}"))?;
     if !status.is_success() {
-        return Err(format!("DeepSeek competitor report failed: HTTP {} {}", status, response_text));
+        return Err(format!(
+            "DeepSeek competitor report failed: HTTP {} {}",
+            status, response_text
+        ));
     }
 
-    let parsed: ChatCompletionResponse = serde_json::from_str(&response_text)
-        .map_err(|e| format!("parse DeepSeek completion envelope failed: {e}; body={response_text}"))?;
+    let parsed: ChatCompletionResponse = serde_json::from_str(&response_text).map_err(|e| {
+        format!("parse DeepSeek completion envelope failed: {e}; body={response_text}")
+    })?;
     let content = parsed
         .choices
         .first()
@@ -1977,7 +2130,12 @@ fn request_material_prompt_rewrite(
         .ok_or_else(|| "DeepSeek material prompt rewrite returned empty content.".to_string())?;
     let prompt = serde_json::from_str::<Value>(&content)
         .ok()
-        .and_then(|value| value.get("prompt").and_then(Value::as_str).map(ToOwned::to_owned))
+        .and_then(|value| {
+            value
+                .get("prompt")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
         .unwrap_or(content)
         .trim()
         .to_string();
@@ -1985,11 +2143,7 @@ fn request_material_prompt_rewrite(
         return Err("DeepSeek material prompt rewrite returned an empty prompt.".to_string());
     }
 
-    let cost_cny = text_usage_cost_cny(
-        settings,
-        &request.text_tier,
-        &parsed.usage,
-    );
+    let cost_cny = text_usage_cost_cny(settings, &request.text_tier, &parsed.usage);
     let event = UsageEvent {
         id: format!("usage_{}", now_ms()),
         feature: "material_prompt_rewrite".to_string(),
@@ -2040,7 +2194,10 @@ fn extract_audio_wav(source_video: &Path, output_path: &Path) -> Result<(), Stri
         .arg(output_path);
     let output = run_command_output(&mut command, "ffmpeg audio extraction")?;
     if !output.status.success() {
-        return Err(format!("ffmpeg audio extraction failed: {}", output_text(&output)));
+        return Err(format!(
+            "ffmpeg audio extraction failed: {}",
+            output_text(&output)
+        ));
     }
     Ok(())
 }
@@ -2062,7 +2219,11 @@ fn json_string_field(value: &Value, key: &str) -> String {
 fn split_text_lines(text: &str) -> Vec<String> {
     let normalized = text.replace(" / ", "\n");
     let mut out = Vec::new();
-    for line in normalized.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in normalized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         if !out.iter().any(|existing: &String| existing == line) {
             out.push(line.to_string());
         }
@@ -2091,11 +2252,18 @@ fn split_sentences(text: &str) -> Vec<String> {
 }
 
 fn first_sentence(text: &str) -> String {
-    split_sentences(text).into_iter().next().unwrap_or_else(|| text.trim().to_string())
+    split_sentences(text)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| text.trim().to_string())
 }
 
 fn first_n_sentences(text: &str, n: usize) -> String {
-    split_sentences(text).into_iter().take(n).collect::<Vec<_>>().join("")
+    split_sentences(text)
+        .into_iter()
+        .take(n)
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn derive_title_candidates(topic: &str, promo_copy: &str, ocr_lines: &[String]) -> Vec<String> {
@@ -2144,7 +2312,11 @@ fn guess_source_kind(value: &str) -> &'static str {
     }
 }
 
-fn normalize_source_spec(spec: SourceSpec, fallback_kind: &str, fallback_label: &str) -> Result<SourceSpec, String> {
+fn normalize_source_spec(
+    spec: SourceSpec,
+    fallback_kind: &str,
+    fallback_label: &str,
+) -> Result<SourceSpec, String> {
     let value = spec.value.trim().to_string();
     if value.is_empty() {
         return Err("样本来源不能为空。".to_string());
@@ -2169,7 +2341,10 @@ fn normalize_source_spec(spec: SourceSpec, fallback_kind: &str, fallback_label: 
     })
 }
 
-fn parse_competitor_bundle(raw: &str, primary_kind_hint: &str) -> Result<CompetitorSourceBundle, String> {
+fn parse_competitor_bundle(
+    raw: &str,
+    primary_kind_hint: &str,
+) -> Result<CompetitorSourceBundle, String> {
     let mut bundle: CompetitorSourceBundle =
         serde_json::from_str(raw).map_err(|e| format!("解析竞品样本输入失败：{e}"))?;
     bundle.primary = normalize_source_spec(bundle.primary, primary_kind_hint, "当前视频")?;
@@ -2298,7 +2473,13 @@ fn score_clamped(value: f64) -> f64 {
 
 fn competitor_metric_meta(
     key: &str,
-) -> (&'static str, &'static str, &'static str, &'static str, &'static [&'static str]) {
+) -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+) {
     match key {
         "hook" => (
             "开头钩子",
@@ -2399,11 +2580,7 @@ fn competitor_metric_note(key: &str, pack: &MaterialPackFile) -> String {
         ),
         "background" => format!(
             "当前背景：{}",
-            preview_text(
-                &pack.video_prompt_draft.visual_brief,
-                "背景信息还偏少",
-                28
-            )
+            preview_text(&pack.video_prompt_draft.visual_brief, "背景信息还偏少", 28)
         ),
         "lighting" => format!(
             "当前布光：{}",
@@ -2445,7 +2622,10 @@ fn score_competitor_metric(key: &str, pack: &MaterialPackFile) -> f64 {
                 return 5.6;
             }
             let mut score = 6.1;
-            if contains_any(&hook, &["为什么", "怎么", "反而", "却", "竟然", "别再", "少吃"]) {
+            if contains_any(
+                &hook,
+                &["为什么", "怎么", "反而", "却", "竟然", "别再", "少吃"],
+            ) {
                 score += 1.1;
             }
             if hook.contains('？') || hook.contains('?') {
@@ -2464,11 +2644,14 @@ fn score_competitor_metric(key: &str, pack: &MaterialPackFile) -> f64 {
             let mut score = 6.0;
             if contains_any(
                 &context,
-                &["专家", "教授", "博士", "医生", "学者", "剑桥", "复旦", "科普", "讲师"],
+                &[
+                    "专家", "教授", "博士", "医生", "学者", "剑桥", "复旦", "科普", "讲师",
+                ],
             ) {
                 score += 1.5;
             }
-            if contains_any(&context, &["眼镜", "领带", "书房", "书架", "专业", "身份"]) {
+            if contains_any(&context, &["眼镜", "领带", "书房", "书架", "专业", "身份"])
+            {
                 score += 0.7;
             }
             if pack.speaker_profile.persona.chars().count() > 8 {
@@ -2500,7 +2683,10 @@ fn score_competitor_metric(key: &str, pack: &MaterialPackFile) -> f64 {
             } else if shortest >= 22 {
                 score -= 0.4;
             }
-            if contains_any(&candidates.join(" "), &["胖", "压力", "代谢", "胰岛素", "长寿"]) {
+            if contains_any(
+                &candidates.join(" "),
+                &["胖", "压力", "代谢", "胰岛素", "长寿"],
+            ) {
                 score += 0.5;
             }
             score_clamped(score + 0.4)
@@ -2519,23 +2705,27 @@ fn score_competitor_metric(key: &str, pack: &MaterialPackFile) -> f64 {
             if (2..=4).contains(&core_count) {
                 score += 0.5;
             }
-            if contains_any(&material_pack_search_text(pack), &["节奏", "停顿", "口播", "自然", "连贯"]) {
+            if contains_any(
+                &material_pack_search_text(pack),
+                &["节奏", "停顿", "口播", "自然", "连贯"],
+            ) {
                 score += 0.3;
             }
             score_clamped(score)
         }
         "background" => {
-            let visual = compact_text(
-                &format!(
-                    "{} {}",
-                    pack.video_prompt_draft.visual_brief, pack.video_prompt_draft.reusable_prompt
-                ),
-            );
+            let visual = compact_text(&format!(
+                "{} {}",
+                pack.video_prompt_draft.visual_brief, pack.video_prompt_draft.reusable_prompt
+            ));
             if visual.is_empty() {
                 return 5.8;
             }
             let mut score = 5.9;
-            if contains_any(&visual, &["书架", "窗帘", "木质", "书房", "景深", "背景", "道具"]) {
+            if contains_any(
+                &visual,
+                &["书架", "窗帘", "木质", "书房", "景深", "背景", "道具"],
+            ) {
                 score += 1.3;
             }
             if contains_any(&visual, &["层次", "虚化", "环境", "高级", "安静"]) {
@@ -2544,17 +2734,16 @@ fn score_competitor_metric(key: &str, pack: &MaterialPackFile) -> f64 {
             score_clamped(score)
         }
         "lighting" => {
-            let visual = compact_text(
-                &format!(
-                    "{} {}",
-                    pack.video_prompt_draft.visual_brief, pack.video_prompt_draft.reusable_prompt
-                ),
-            );
+            let visual = compact_text(&format!(
+                "{} {}",
+                pack.video_prompt_draft.visual_brief, pack.video_prompt_draft.reusable_prompt
+            ));
             if visual.is_empty() {
                 return 6.0;
             }
             let mut score = 6.2;
-            if contains_any(&visual, &["柔和", "主光", "补光", "肤色", "暖中性", "通透"]) {
+            if contains_any(&visual, &["柔和", "主光", "补光", "肤色", "暖中性", "通透"])
+            {
                 score += 1.2;
             }
             if contains_any(&visual, &["布光", "高级", "自然", "不过曝", "不过灰"]) {
@@ -2563,17 +2752,18 @@ fn score_competitor_metric(key: &str, pack: &MaterialPackFile) -> f64 {
             score_clamped(score)
         }
         "framing" => {
-            let visual = compact_text(
-                &format!(
-                    "{} {}",
-                    pack.video_prompt_draft.visual_brief, pack.video_prompt_draft.reusable_prompt
-                ),
-            );
+            let visual = compact_text(&format!(
+                "{} {}",
+                pack.video_prompt_draft.visual_brief, pack.video_prompt_draft.reusable_prompt
+            ));
             if visual.is_empty() {
                 return 6.1;
             }
             let mut score = 6.3;
-            if contains_any(&visual, &["9:16", "竖屏", "中近景", "胸像", "平视", "稳定", "机位"]) {
+            if contains_any(
+                &visual,
+                &["9:16", "竖屏", "中近景", "胸像", "平视", "稳定", "机位"],
+            ) {
                 score += 1.4;
             }
             if contains_any(&visual, &["构图", "安全区", "字幕", "口型"]) {
@@ -2582,19 +2772,20 @@ fn score_competitor_metric(key: &str, pack: &MaterialPackFile) -> f64 {
             score_clamped(score)
         }
         _ => {
-            let context = compact_text(
-                &format!(
-                    "{} {} {}",
-                    pack.speaker_profile.persona,
-                    pack.speaker_profile.tone,
-                    pack.video_prompt_draft.spoken_brief
-                ),
-            );
+            let context = compact_text(&format!(
+                "{} {} {}",
+                pack.speaker_profile.persona,
+                pack.speaker_profile.tone,
+                pack.video_prompt_draft.spoken_brief
+            ));
             if context.is_empty() {
                 return 6.2;
             }
             let mut score = 6.3;
-            if contains_any(&context, &["专业", "亲和", "沉稳", "可信", "自然", "克制", "讲解"]) {
+            if contains_any(
+                &context,
+                &["专业", "亲和", "沉稳", "可信", "自然", "克制", "讲解"],
+            ) {
                 score += 1.2;
             }
             if contains_any(&context, &["口播", "表达", "稳定", "陪伴"]) {
@@ -2608,11 +2799,7 @@ fn score_competitor_metric(key: &str, pack: &MaterialPackFile) -> f64 {
     }
 }
 
-fn rewrite_hint_for_metric(
-    key: &str,
-    current_pack: &MaterialPackFile,
-    best_label: &str,
-) -> String {
+fn rewrite_hint_for_metric(key: &str, current_pack: &MaterialPackFile, best_label: &str) -> String {
     match key {
         "hook" => {
             let candidate = if current_pack.editable_script.hook.trim().is_empty() {
@@ -2627,11 +2814,7 @@ fn rewrite_hint_for_metric(
             format!("参考 {best_label} 的开场方式，首句直接抛出“{candidate}”这类反常识问题，再用下一句补解释，不要先铺背景。")
         }
         "authority" => {
-            let persona = preview_text(
-                &current_pack.speaker_profile.persona,
-                "专业健康讲师",
-                22,
-            );
+            let persona = preview_text(&current_pack.speaker_profile.persona, "专业健康讲师", 22);
             format!("参考 {best_label} 的首屏身份表达，在信息条提前补出“{persona} / 专业研究背景 / 服务对象”这类可信线索。")
         }
         "subtitles" => {
@@ -2648,7 +2831,11 @@ fn rewrite_hint_for_metric(
             format!("参考 {best_label} 的节奏，围绕“{hook}”按“结论 -> 原因 -> 机制 -> 落点”重排结构，每句只保留一个信息点。")
         }
         "background" => {
-            let visual = preview_text(&current_pack.video_prompt_draft.visual_brief, "书房背景", 18);
+            let visual = preview_text(
+                &current_pack.video_prompt_draft.visual_brief,
+                "书房背景",
+                18,
+            );
             format!("参考 {best_label} 的空间层次，保留“{visual}”这类线索，再补进书架、窗帘、桌面道具和景深层次。")
         }
         "lighting" => {
@@ -2694,12 +2881,19 @@ fn build_competitor_metric_report(
         })
         .collect::<Vec<_>>();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let competitor_scores = scored.iter().map(|(_, score, _)| *score).collect::<Vec<_>>();
+    let competitor_scores = scored
+        .iter()
+        .map(|(_, score, _)| *score)
+        .collect::<Vec<_>>();
     let competitor_score = average_f64(&competitor_scores);
-    let (best_label, competitor_best_score, best_note) = scored
-        .first()
-        .cloned()
-        .unwrap_or_else(|| ("竞品样本".to_string(), current_score, "没有可用竞品说明。".to_string()));
+    let (best_label, competitor_best_score, best_note) =
+        scored.first().cloned().unwrap_or_else(|| {
+            (
+                "竞品样本".to_string(),
+                current_score,
+                "没有可用竞品说明。".to_string(),
+            )
+        });
     let evidence = scored
         .iter()
         .take(3)
@@ -2720,7 +2914,10 @@ fn build_competitor_metric_report(
         ),
         action: action.to_string(),
         rewrite_hint: rewrite_hint_for_metric(key, current_pack, &best_label),
-        prompt_tweaks: tweak_slice.iter().map(|value| (*value).to_string()).collect(),
+        prompt_tweaks: tweak_slice
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
         prompt_focus: prompt_focus.to_string(),
         evidence,
     }
@@ -2739,9 +2936,8 @@ fn load_settings_envelope() -> Result<RuntimeSettingsEnvelope, String> {
         save_settings_envelope(&envelope)?;
         return Ok(envelope);
     }
-    let legacy = serde_json::from_str::<RuntimeSettingsFile>(&raw).map_err(|e| {
-        format!("failed to parse settings at {}: {e}", path.display())
-    })?;
+    let legacy = serde_json::from_str::<RuntimeSettingsFile>(&raw)
+        .map_err(|e| format!("failed to parse settings at {}: {e}", path.display()))?;
     let upgraded = RuntimeSettingsEnvelope {
         schema_version: SETTINGS_SCHEMA_VERSION,
         updated_at_ms: now_ms(),
@@ -3034,7 +3230,8 @@ fn run_extract_ingest_stage(item: &JobWorkItem) -> Result<Vec<String>, String> {
 fn run_extract_preprocess_stage(item: &JobWorkItem) -> Result<Vec<String>, String> {
     ensure_job_layout(&item.artifact_dir)?;
     let source_video = source_video_path(&item.artifact_dir)?;
-    let report = validate_video_file_l0(&source_video, None, 0.0, false).map_err(|e| e.to_string())?;
+    let report =
+        validate_video_file_l0(&source_video, None, 0.0, false).map_err(|e| e.to_string())?;
     write_json_file(
         &job_derived_dir(&item.artifact_dir).join("media_probe.json"),
         &report.layers_json(),
@@ -3057,7 +3254,8 @@ fn run_extract_preprocess_stage(item: &JobWorkItem) -> Result<Vec<String>, Strin
     }
 
     let frame_count = item.frame_count.max(1) as usize;
-    let frames = extract_keyframes_scaled(&source_video, frame_count, 768).map_err(|e| e.to_string())?;
+    let frames =
+        extract_keyframes_scaled(&source_video, frame_count, 768).map_err(|e| e.to_string())?;
     let mut frame_manifest = Vec::new();
     for (index, frame) in frames.iter().enumerate() {
         let path = frames_dir.join(format!("frame_{:04}.jpg", index + 1));
@@ -3075,7 +3273,12 @@ fn run_extract_preprocess_stage(item: &JobWorkItem) -> Result<Vec<String>, Strin
     )?;
 
     let mut notes = vec![format!("已生成 {} 张抽样帧。", frames.len())];
-    if report.probe.as_ref().map(|probe| probe.audio_streams > 0).unwrap_or(false) {
+    if report
+        .probe
+        .as_ref()
+        .map(|probe| probe.audio_streams > 0)
+        .unwrap_or(false)
+    {
         let audio_path = job_derived_dir(&item.artifact_dir).join("audio.wav");
         extract_audio_wav(&source_video, &audio_path)?;
         notes.push(format!("音频已提取到 {}", audio_path.display()));
@@ -3085,7 +3288,10 @@ fn run_extract_preprocess_stage(item: &JobWorkItem) -> Result<Vec<String>, Strin
     Ok(notes)
 }
 
-fn run_extract_ocr_stage(item: &JobWorkItem, settings: &RuntimeSettingsFile) -> Result<Vec<String>, String> {
+fn run_extract_ocr_stage(
+    item: &JobWorkItem,
+    settings: &RuntimeSettingsFile,
+) -> Result<Vec<String>, String> {
     let ocr_path = job_derived_dir(&item.artifact_dir).join("ocr.json");
     if !settings.limits.auto_ocr {
         write_json_file(
@@ -3134,7 +3340,10 @@ fn run_extract_ocr_stage(item: &JobWorkItem, settings: &RuntimeSettingsFile) -> 
     Ok(vec![format!("OCR 已提取 {} 行字幕文本。", lines.len())])
 }
 
-fn run_extract_asr_stage(item: &JobWorkItem, settings: &RuntimeSettingsFile) -> Result<Vec<String>, String> {
+fn run_extract_asr_stage(
+    item: &JobWorkItem,
+    settings: &RuntimeSettingsFile,
+) -> Result<Vec<String>, String> {
     let asr_path = job_derived_dir(&item.artifact_dir).join("asr.json");
     let audio_path = job_derived_dir(&item.artifact_dir).join("audio.wav");
     if !settings.limits.auto_asr || !audio_path.is_file() {
@@ -3152,7 +3361,8 @@ fn run_extract_asr_stage(item: &JobWorkItem, settings: &RuntimeSettingsFile) -> 
 
     let endpoint = build_asr_endpoint(settings)?;
     let transcript = request_transcription(&endpoint, &audio_path).map_err(|e| e.to_string())?;
-    let media_probe = read_json_value(&job_derived_dir(&item.artifact_dir).join("media_probe.json"))?;
+    let media_probe =
+        read_json_value(&job_derived_dir(&item.artifact_dir).join("media_probe.json"))?;
     let duration = media_probe
         .get("probe")
         .and_then(|probe| probe.get("duration_s"))
@@ -3179,10 +3389,14 @@ fn run_extract_asr_stage(item: &JobWorkItem, settings: &RuntimeSettingsFile) -> 
     Ok(vec!["音频转写已完成。".to_string()])
 }
 
-fn run_extract_vision_stage(item: &JobWorkItem, settings: &RuntimeSettingsFile) -> Result<Vec<String>, String> {
+fn run_extract_vision_stage(
+    item: &JobWorkItem,
+    settings: &RuntimeSettingsFile,
+) -> Result<Vec<String>, String> {
     let source_video = source_video_path(&item.artifact_dir)?;
     let endpoint = build_vl_endpoint(settings)?;
-    let frames = extract_keyframes(&source_video, item.frame_count.max(1) as usize).map_err(|e| e.to_string())?;
+    let frames = extract_keyframes(&source_video, item.frame_count.max(1) as usize)
+        .map_err(|e| e.to_string())?;
     let payload: Vec<String> = frames.iter().map(|frame| encode_frame(frame)).collect();
     let asr_json = read_json_value(&job_derived_dir(&item.artifact_dir).join("asr.json")).ok();
     let transcript = asr_json
@@ -3192,8 +3406,8 @@ fn run_extract_vision_stage(item: &JobWorkItem, settings: &RuntimeSettingsFile) 
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "none available")
         .map(ToOwned::to_owned);
-    let artifact =
-        request_reverse_prompt(&endpoint, &payload, transcript.as_deref()).map_err(|e| e.to_string())?;
+    let artifact = request_reverse_prompt(&endpoint, &payload, transcript.as_deref())
+        .map_err(|e| e.to_string())?;
     let analysis_dir = job_analysis_dir(&item.artifact_dir);
     write_json_file(&analysis_dir.join("reverse_prompt_raw.json"), &artifact)?;
 
@@ -3237,7 +3451,10 @@ fn run_extract_vision_stage(item: &JobWorkItem, settings: &RuntimeSettingsFile) 
             })
         })
         .collect::<Vec<_>>();
-    write_json_file(&analysis_dir.join("frame_analysis.json"), &json!(frame_analysis))?;
+    write_json_file(
+        &analysis_dir.join("frame_analysis.json"),
+        &json!(frame_analysis),
+    )?;
 
     let visual_style_md = format!(
         "# Visual Style\n\n## Subject\n{}\n\n## Environment\n{}\n\n## Camera\n{}\n\n## Lighting\n{}\n\n## Style\n{}\n\n## Mood\n{}\n",
@@ -3286,17 +3503,36 @@ fn run_extract_text_stage(item: &JobWorkItem) -> Result<Vec<String>, String> {
 
     let content_summary_md = format!(
         "# Content Summary\n\n- Summary: {}\n- Hook: {}\n- Promo: {}\n- Subject: {}\n",
-        if summary.is_empty() { "none available" } else { &summary },
-        if spoken_copy.is_empty() { "none inferred" } else { &spoken_copy },
-        if promo_copy.is_empty() { "none available" } else { &promo_copy },
+        if summary.is_empty() {
+            "none available"
+        } else {
+            &summary
+        },
+        if spoken_copy.is_empty() {
+            "none inferred"
+        } else {
+            &spoken_copy
+        },
+        if promo_copy.is_empty() {
+            "none available"
+        } else {
+            &promo_copy
+        },
         json_string_field(&reverse_prompt, "subject"),
     );
-    write_text_file(&analysis_dir.join("content_summary.md"), &content_summary_md)?;
+    write_text_file(
+        &analysis_dir.join("content_summary.md"),
+        &content_summary_md,
+    )?;
 
-    let hook_candidates = [spoken_copy.clone(), promo_copy.clone(), subtitle_lines.first().cloned().unwrap_or_default()]
-        .into_iter()
-        .filter(|candidate| !candidate.trim().is_empty())
-        .collect::<Vec<_>>();
+    let hook_candidates = [
+        spoken_copy.clone(),
+        promo_copy.clone(),
+        subtitle_lines.first().cloned().unwrap_or_default(),
+    ]
+    .into_iter()
+    .filter(|candidate| !candidate.trim().is_empty())
+    .collect::<Vec<_>>();
     write_text_file(
         &analysis_dir.join("hook_candidates.md"),
         &hook_candidates
@@ -3355,7 +3591,10 @@ fn run_extract_material_pack_stage(item: &JobWorkItem) -> Result<Vec<String>, St
     let body_block = if transcript.trim().is_empty() {
         vec![promo_copy.clone()]
     } else {
-        vec![first_n_sentences(&transcript, 2), first_n_sentences(&transcript, 4)]
+        vec![
+            first_n_sentences(&transcript, 2),
+            first_n_sentences(&transcript, 4),
+        ]
     };
     let material_pack = json!({
         "job_id": item.id,
@@ -3716,7 +3955,10 @@ fn merge_competitor_report_from_llm(
         .unwrap_or_default()
         .into_iter()
         .filter_map(|metric| {
-            let key = metric.get("key").and_then(Value::as_str).map(ToOwned::to_owned)?;
+            let key = metric
+                .get("key")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)?;
             Some((key, metric))
         })
         .collect::<std::collections::HashMap<_, _>>();
@@ -3780,7 +4022,10 @@ fn merge_competitor_report_from_llm(
     })
 }
 
-fn build_competitor_report(item: &JobWorkItem, manifest: &CompetitorManifest) -> Result<CompetitorReport, String> {
+fn build_competitor_report(
+    item: &JobWorkItem,
+    manifest: &CompetitorManifest,
+) -> Result<CompetitorReport, String> {
     let heuristic = build_heuristic_competitor_report(item, manifest)?;
     let current_root = PathBuf::from(&manifest.primary.artifact_dir);
     let current_pack = read_material_pack_file(&material_pack_path(&current_root))?;
@@ -3850,7 +4095,10 @@ fn run_competitor_report_stage(item: &JobWorkItem) -> Result<Vec<String>, String
             .collect::<Vec<_>>()
             .join("\n")
     );
-    write_text_file(&job_output_dir(&item.artifact_dir).join("competitor_report.md"), &md)?;
+    write_text_file(
+        &job_output_dir(&item.artifact_dir).join("competitor_report.md"),
+        &md,
+    )?;
 
     Ok(vec![
         format!(
@@ -3861,7 +4109,9 @@ fn run_competitor_report_stage(item: &JobWorkItem) -> Result<Vec<String>, String
         if report.llm_usage.total_tokens > 0 {
             format!(
                 "本次报告实际用量：prompt {} / completion {} / total {} tokens。",
-                report.llm_usage.prompt_tokens, report.llm_usage.completion_tokens, report.llm_usage.total_tokens
+                report.llm_usage.prompt_tokens,
+                report.llm_usage.completion_tokens,
+                report.llm_usage.total_tokens
             )
         } else {
             "本次报告未记录到实际 token，用启发式报告兜底。".to_string()
@@ -3873,7 +4123,10 @@ fn run_competitor_report_stage(item: &JobWorkItem) -> Result<Vec<String>, String
     ])
 }
 
-fn process_extract_stage(item: &JobWorkItem, settings: &RuntimeSettingsFile) -> Result<Vec<String>, String> {
+fn process_extract_stage(
+    item: &JobWorkItem,
+    settings: &RuntimeSettingsFile,
+) -> Result<Vec<String>, String> {
     match item.stage_key.as_str() {
         "extract_ingest" => run_extract_ingest_stage(item),
         "extract_preprocess" => run_extract_preprocess_stage(item),
@@ -3905,7 +4158,9 @@ fn process_job_stage(item: &JobWorkItem) -> Result<Vec<String>, String> {
     match item.mode.as_str() {
         "extract" => process_extract_stage(item, &settings),
         "competitor" => process_competitor_stage(item, &settings),
-        "review" => Err("当前版本只接通了 extract / competitor 链路，review 还未挂真实执行器。".to_string()),
+        "review" => {
+            Err("当前版本只接通了 extract / competitor 链路，review 还未挂真实执行器。".to_string())
+        }
         other => Err(format!("unsupported job mode {other}")),
     }
 }
@@ -3932,9 +4187,8 @@ impl JobStore {
         }
 
         let raw = read_json_file(&file_path)?;
-        let queue = serde_json::from_str::<JobQueueFile>(&raw).map_err(|e| {
-            format!("failed to parse jobs at {}: {e}", file_path.display())
-        })?;
+        let queue = serde_json::from_str::<JobQueueFile>(&raw)
+            .map_err(|e| format!("failed to parse jobs at {}: {e}", file_path.display()))?;
         Ok(Self {
             file_path,
             jobs_root,
@@ -4040,8 +4294,8 @@ impl JobStore {
             }
             competitor_count = bundle.competitors.len() as u32;
             source_kind = bundle.primary.kind.clone();
-            source_value =
-                serde_json::to_string(&bundle).map_err(|e| format!("serialize competitor bundle failed: {e}"))?;
+            source_value = serde_json::to_string(&bundle)
+                .map_err(|e| format!("serialize competitor bundle failed: {e}"))?;
         }
 
         let estimate_request = EstimateJobRequest {
@@ -4076,7 +4330,8 @@ impl JobStore {
         fs::create_dir_all(&artifact_dir).map_err(|e| e.to_string())?;
 
         let created_at_ms = now_ms();
-        let target_prompt_tokens = ((estimate.estimated_prompt_tokens as f64) * 0.92).round() as u32;
+        let target_prompt_tokens =
+            ((estimate.estimated_prompt_tokens as f64) * 0.92).round() as u32;
         let target_completion_tokens =
             ((estimate.estimated_completion_tokens as f64) * 0.88).round() as u32;
         let target_cost_cny = round2((estimate.estimated_cost_cny * 0.91).max(0.02));
@@ -4193,11 +4448,21 @@ impl JobStore {
     }
 
     fn prepare_next_work_item(&mut self) -> Result<Option<JobWorkItem>, String> {
-        if let Some(index) = self.queue.jobs.iter().position(|job| job.status == "running") {
+        if let Some(index) = self
+            .queue
+            .jobs
+            .iter()
+            .position(|job| job.status == "running")
+        {
             return Ok(Some(JobWorkItem::from(&self.queue.jobs[index])));
         }
 
-        if let Some(index) = self.queue.jobs.iter().position(|job| job.status == "waiting") {
+        if let Some(index) = self
+            .queue
+            .jobs
+            .iter()
+            .position(|job| job.status == "waiting")
+        {
             start_waiting_job(&mut self.queue.jobs[index]);
             self.queue.updated_at_ms = now_ms();
             self.save()?;
@@ -4249,7 +4514,8 @@ impl JobStore {
         job.error = Some(error.clone());
         job.finished_at_ms = Some(timestamp);
         job.updated_at_ms = timestamp;
-        job.notes.push(format!("[{}] 阶段执行失败：{error}", job.stage_key));
+        job.notes
+            .push(format!("[{}] 阶段执行失败：{error}", job.stage_key));
         let _ = append_stage_log(
             Path::new(&job.artifact_dir),
             &job.stage_key,
@@ -4320,11 +4586,7 @@ impl JobStore {
             job.error = None;
             job.stage_index = 0;
             job.notes.push("[queued] 任务已重新入队。".to_string());
-            let _ = append_stage_log(
-                Path::new(&job.artifact_dir),
-                "queued",
-                "任务已重新入队。",
-            );
+            let _ = append_stage_log(Path::new(&job.artifact_dir), "queued", "任务已重新入队。");
             Ok::<JobView, String>(JobView::from(&*job))
         }?;
 
@@ -4348,7 +4610,8 @@ impl From<&JobRecord> for JobView {
             text_tier: value.text_tier.clone(),
             estimated_prompt_tokens: value.estimated_prompt_tokens,
             estimated_completion_tokens: value.estimated_completion_tokens,
-            estimated_total_tokens: value.estimated_prompt_tokens + value.estimated_completion_tokens,
+            estimated_total_tokens: value.estimated_prompt_tokens
+                + value.estimated_completion_tokens,
             actual_prompt_tokens: value.actual_prompt_tokens,
             actual_completion_tokens: value.actual_completion_tokens,
             actual_total_tokens: value.actual_prompt_tokens + value.actual_completion_tokens,
@@ -4364,11 +4627,21 @@ impl From<&JobRecord> for JobView {
             artifact_dir: value.artifact_dir.clone(),
             material_pack_path: material_pack_path(Path::new(&value.artifact_dir))
                 .is_file()
-                .then(|| material_pack_path(Path::new(&value.artifact_dir)).display().to_string()),
+                .then(|| {
+                    material_pack_path(Path::new(&value.artifact_dir))
+                        .display()
+                        .to_string()
+                }),
             competitor_report_path: competitor_report_path(Path::new(&value.artifact_dir))
                 .is_file()
-                .then(|| competitor_report_path(Path::new(&value.artifact_dir)).display().to_string()),
-            stage_log_path: stage_log_path(Path::new(&value.artifact_dir)).display().to_string(),
+                .then(|| {
+                    competitor_report_path(Path::new(&value.artifact_dir))
+                        .display()
+                        .to_string()
+                }),
+            stage_log_path: stage_log_path(Path::new(&value.artifact_dir))
+                .display()
+                .to_string(),
             notes: value.notes.clone(),
             error: value.error.clone(),
         }
@@ -4470,8 +4743,7 @@ fn apply_stage_share(job: &mut JobRecord, completed_steps: usize, total_steps: u
     let share = (completed_steps as f64 / total_steps as f64).clamp(0.0, 0.95);
     job.progress = (share * 100.0).round() as u8;
     job.actual_prompt_tokens = (job.target_prompt_tokens as f64 * share).round() as u32;
-    job.actual_completion_tokens =
-        (job.target_completion_tokens as f64 * share).round() as u32;
+    job.actual_completion_tokens = (job.target_completion_tokens as f64 * share).round() as u32;
     job.actual_cost_cny = round2(job.target_cost_cny * share);
 }
 
@@ -4492,11 +4764,7 @@ fn complete_job(job: &mut JobRecord) {
             "真实素材提炼链路已执行完成，产物已写入当前任务目录。"
         };
         job.notes.push(completion_note.to_string());
-        let _ = append_stage_log(
-            Path::new(&job.artifact_dir),
-            "completed",
-            completion_note,
-        );
+        let _ = append_stage_log(Path::new(&job.artifact_dir), "completed", completion_note);
     }
 }
 
@@ -4535,7 +4803,10 @@ fn worker_loop(shared: Arc<Mutex<JobStore>>) {
             Err(err) => {
                 if let Ok(mut guard) = shared.lock() {
                     if let Err(commit_err) = guard.fail_job(&item.id, err.clone()) {
-                        eprintln!("job worker fail commit failed for {}: {commit_err}", item.id);
+                        eprintln!(
+                            "job worker fail commit failed for {}: {commit_err}",
+                            item.id
+                        );
                     }
                 }
                 eprintln!("job worker stage failed for {}: {err}", item.id);
@@ -4622,10 +4893,7 @@ fn get_dashboard_snapshot(state: tauri::State<'_, AppState>) -> Result<Dashboard
 }
 
 #[tauri::command]
-fn read_job_stage_log(
-    job_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
+fn read_job_stage_log(job_id: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
     let guard = state
         .jobs
         .lock()
@@ -4658,7 +4926,9 @@ fn read_job_competitor_report(
 }
 
 #[tauri::command]
-fn generate_material_prompt(request: MaterialPromptRewriteRequest) -> Result<MaterialPromptRewriteResult, String> {
+fn generate_material_prompt(
+    request: MaterialPromptRewriteRequest,
+) -> Result<MaterialPromptRewriteResult, String> {
     let settings = load_settings_envelope()?.settings;
     let endpoint = build_text_endpoint_for_tier(&settings, &request.text_tier)?;
     request_material_prompt_rewrite(&endpoint, &settings, &request)
@@ -4678,10 +4948,7 @@ fn open_environment_setup_script() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn open_job_artifact_dir(
-    job_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+fn open_job_artifact_dir(job_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let guard = state
         .jobs
         .lock()
@@ -4692,10 +4959,7 @@ fn open_job_artifact_dir(
 }
 
 #[tauri::command]
-fn open_job_material_pack(
-    job_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+fn open_job_material_pack(job_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let guard = state
         .jobs
         .lock()
@@ -4747,11 +5011,75 @@ pub fn run() {
             load_settings_envelope()
                 .map(|_| ())
                 .map_err(io::Error::other)?;
-            load_usage_ledger()
-                .map(|_| ())
-                .map_err(io::Error::other)?;
+            load_usage_ledger().map(|_| ()).map_err(io::Error::other)?;
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running MicrocodeX Short Video Workbench");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        extract_douyin_url_from_share_text, latest_downloaded_video,
+        summarize_douyin_download_issue,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "mcx_short_video_{name}_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        dir
+    }
+
+    #[test]
+    fn extracts_clean_url_from_share_text() {
+        let source = "5.89 复制打开抖音，看看【编导厉岑的作品】自制AIGC动画《余烬之后》 https://v.douyin.com/9b-SVijteYw/ k@c.NW Btr:/ 08/01 :1pm";
+        let extracted = extract_douyin_url_from_share_text(source);
+        assert_eq!(
+            extracted.as_deref(),
+            Some("https://v.douyin.com/9b-SVijteYw/")
+        );
+    }
+
+    #[test]
+    fn normalizes_short_url_without_scheme() {
+        let source = "复制后打开 v.douyin.com/mcsNoHv8Hlc/ 看看";
+        let extracted = extract_douyin_url_from_share_text(source);
+        assert_eq!(
+            extracted.as_deref(),
+            Some("https://v.douyin.com/mcsNoHv8Hlc/")
+        );
+    }
+
+    #[test]
+    fn surfaces_parse_failures_from_downloader_output() {
+        let output = "Found 1 URL(s) to process\nFailed to parse URL: 5.89 分享文案";
+        let message = summarize_douyin_download_issue(output);
+        assert!(message.is_some());
+        assert!(message.unwrap().contains("解析出抖音链接"));
+    }
+
+    #[test]
+    fn latest_downloaded_video_requires_a_new_file() {
+        let root = unique_temp_dir("latest_downloaded_video");
+        fs::create_dir_all(&root).unwrap();
+        let old_video = root.join("old.mp4");
+        fs::write(&old_video, b"old").unwrap();
+        thread::sleep(Duration::from_millis(20));
+        let started_at = SystemTime::now();
+        let result = latest_downloaded_video(&root, started_at);
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
 }
