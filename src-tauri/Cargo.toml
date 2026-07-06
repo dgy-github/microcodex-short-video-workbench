@@ -21,7 +21,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-ncx-video-agent = { path = "../../nanocodex/rust/crates/ncx-video-agent" }
+ncx-video-agent = { path = "../vendor/rust/crates/ncx-video-agent" }
 
 [profile.release]
 strip = false

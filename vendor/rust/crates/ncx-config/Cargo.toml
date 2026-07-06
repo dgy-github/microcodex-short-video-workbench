@@ -1,0 +1,9 @@
+[package]
+name = "ncx-config"
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+rust-version = "1.96"
+
+[dependencies]
+toml = "0.8"
