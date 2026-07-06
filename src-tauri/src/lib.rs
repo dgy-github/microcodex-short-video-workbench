@@ -924,6 +924,19 @@ fn bundled_ffmpeg_path() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+fn bundled_ffprobe_path() -> Option<PathBuf> {
+    let path = bundled_runtime_root()?
+        .join("ffmpeg")
+        .join("bin")
+        .join("ffprobe.exe");
+    path.is_file().then_some(path)
+}
+
+fn bundled_ffmpeg_bin_dir() -> Option<PathBuf> {
+    let path = bundled_runtime_root()?.join("ffmpeg").join("bin");
+    path.is_dir().then_some(path)
+}
+
 fn bundled_playwright_browsers_dir() -> Option<PathBuf> {
     let path = bundled_runtime_root()?.join("playwright-browsers");
     path.is_dir().then_some(path)
@@ -935,6 +948,48 @@ fn resolve_python_program() -> PathBuf {
 
 fn resolve_ffmpeg_program() -> PathBuf {
     bundled_ffmpeg_path().unwrap_or_else(|| PathBuf::from("ffmpeg"))
+}
+
+fn resolve_ffprobe_program() -> PathBuf {
+    bundled_ffprobe_path().unwrap_or_else(|| PathBuf::from("ffprobe"))
+}
+
+#[cfg(target_os = "windows")]
+fn same_pathish(lhs: &Path, rhs: &Path) -> bool {
+    path_string(lhs).eq_ignore_ascii_case(&path_string(rhs))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn same_pathish(lhs: &Path, rhs: &Path) -> bool {
+    lhs == rhs
+}
+
+fn prepend_process_path(dir: &Path) -> Result<(), String> {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut parts = std::env::split_paths(&current).collect::<Vec<_>>();
+    if parts.iter().any(|existing| same_pathish(existing, dir)) {
+        return Ok(());
+    }
+
+    let mut merged = Vec::with_capacity(parts.len() + 1);
+    merged.push(dir.to_path_buf());
+    merged.append(&mut parts);
+    let joined = std::env::join_paths(merged)
+        .map_err(|err| format!("join PATH entries failed for {}: {err}", dir.display()))?;
+    std::env::set_var("PATH", joined);
+    Ok(())
+}
+
+fn apply_bundled_runtime_process_env(runtime_root: &Path) -> Result<(), String> {
+    std::env::set_var(BUNDLED_RUNTIME_ROOT_ENV, runtime_root);
+    if let Some(ffmpeg_bin) = bundled_ffmpeg_bin_dir() {
+        prepend_process_path(&ffmpeg_bin)?;
+    }
+    let bundled_playwright = runtime_root.join("playwright-browsers");
+    if bundled_playwright.is_dir() {
+        std::env::set_var("PLAYWRIGHT_BROWSERS_PATH", bundled_playwright);
+    }
+    Ok(())
 }
 
 fn apply_python_command_env(command: &mut Command) {
@@ -988,7 +1043,7 @@ fn prepare_bundled_runtime(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     };
 
-    std::env::set_var(BUNDLED_RUNTIME_ROOT_ENV, &runtime_root);
+    apply_bundled_runtime_process_env(&runtime_root)?;
     write_text_file(&bundled_runtime_hint_path()?, &path_string(&runtime_root))?;
 
     let source_downloader = runtime_root.join("douyin-downloader");
@@ -1942,6 +1997,31 @@ fn build_environment_report(
         },
     };
     items.push(ffmpeg_item);
+
+    let ffprobe_program = resolve_ffprobe_program();
+    let ffprobe_item = match probe_command(&ffprobe_program, &["-version"], None, None) {
+        Ok(text) => EnvironmentCheckItem {
+            key: "ffprobe".to_string(),
+            label: "FFprobe".to_string(),
+            status: "ok".to_string(),
+            detail: format!(
+                "已检测到 ffprobe：{}（{}）。",
+                line_preview(&text),
+                ffprobe_program.display()
+            ),
+            action_hint: "无需处理。".to_string(),
+        },
+        Err(err) => EnvironmentCheckItem {
+            key: "ffprobe".to_string(),
+            label: "FFprobe".to_string(),
+            status: "missing".to_string(),
+            detail: format!("未检测到 ffprobe：{}。", line_preview(&err)),
+            action_hint:
+                "优先使用带内置运行包的安装器；否则运行内置 PowerShell 引导脚本，或手动安装 FFmpeg 并加入 PATH。"
+                    .to_string(),
+        },
+    };
+    items.push(ffprobe_item);
 
     let python_program = resolve_python_program();
     let python_item = match probe_command(
@@ -5929,7 +6009,7 @@ pub fn run() {
         panic!("failed to initialize job store: {err}");
     });
     let shared = Arc::new(Mutex::new(store));
-    worker_loop(shared.clone());
+    let setup_shared = shared.clone();
 
     tauri::Builder::default()
         .manage(AppState { jobs: shared })
@@ -5957,12 +6037,13 @@ pub fn run() {
             open_job_material_pack,
             open_runtime_settings_dir
         ])
-        .setup(|app| {
+        .setup(move |app| {
             prepare_bundled_runtime(app.handle()).map_err(io::Error::other)?;
             load_settings_envelope()
                 .map(|_| ())
                 .map_err(io::Error::other)?;
             load_usage_ledger().map(|_| ()).map_err(io::Error::other)?;
+            worker_loop(setup_shared.clone());
             Ok(())
         })
         .run(tauri::generate_context!())
