@@ -104,7 +104,7 @@ if (-not $PortableRoot) {
 
 $resolvedBundleRuntimeDir = [System.IO.Path]::GetFullPath($BundleRuntimeDir)
 $resolvedPortableRoot = [System.IO.Path]::GetFullPath($PortableRoot)
-$zipPath = Join-Path (Split-Path $resolvedPortableRoot -Parent) "mcx-portable_0.1.0-alpha.4_x64.zip"
+$zipPath = Join-Path (Split-Path $resolvedPortableRoot -Parent) "mcx-portable_0.1.0-alpha.5_x64.zip"
 $buildFixedRuntimePath = Join-Path $ProjectRoot "src-tauri\Microsoft.WebView2.FixedVersionRuntime"
 
 if (-not (Test-BundleRuntimeReady $resolvedBundleRuntimeDir)) {

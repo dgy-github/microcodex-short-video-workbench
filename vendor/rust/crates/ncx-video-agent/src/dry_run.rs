@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
 use std::time::Instant;
 
@@ -456,7 +457,7 @@ fn remove_previous_sqlite(db_path: &Path) -> Result<()> {
 
 fn make_color_clip(path: &Path, color: &str, duration_s: f64) -> Result<()> {
     let input = format!("color=c={color}:s=160x90:d={duration_s}:r=10");
-    let output = Command::new("ffmpeg")
+    let output = crate::ffmpeg_command()
         .args([
             "-y", "-v", "error", "-f", "lavfi", "-i", &input, "-pix_fmt", "yuv420p", "-an",
         ])
@@ -478,7 +479,7 @@ fn make_local_tts_placeholder_audio(path: &Path, duration_s: f64) -> Result<()> 
         "sine=frequency=440:duration={}:sample_rate=48000",
         duration_s.max(0.1)
     );
-    let output = Command::new("ffmpeg")
+    let output = crate::ffmpeg_command()
         .args(["-y", "-v", "error", "-f", "lavfi", "-i", &input])
         .args(["-ac", "2", "-ar", "48000"])
         .arg(path)

@@ -5,6 +5,9 @@
 //! and the local L0 gate surface. Cloud providers and Temporal workers plug
 //! into these primitives instead of bypassing them.
 
+use std::ffi::OsString;
+use std::process::Command;
+
 pub mod ark;
 pub mod db;
 pub mod dry_run;
@@ -111,6 +114,23 @@ pub enum VideoAgentError {
 }
 
 pub type Result<T> = std::result::Result<T, VideoAgentError>;
+
+pub(crate) const FFMPEG_PATH_ENV: &str = "MICROCODEX_FFMPEG";
+pub(crate) const FFPROBE_PATH_ENV: &str = "MICROCODEX_FFPROBE";
+
+fn resolve_media_tool_program(env_key: &str, fallback: &str) -> OsString {
+    std::env::var_os(env_key)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| OsString::from(fallback))
+}
+
+pub(crate) fn ffmpeg_command() -> Command {
+    Command::new(resolve_media_tool_program(FFMPEG_PATH_ENV, "ffmpeg"))
+}
+
+pub(crate) fn ffprobe_command() -> Command {
+    Command::new(resolve_media_tool_program(FFPROBE_PATH_ENV, "ffprobe"))
+}
 
 #[cfg(test)]
 pub(crate) mod test_support {

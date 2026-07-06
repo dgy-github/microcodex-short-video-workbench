@@ -32,6 +32,8 @@ const DEFAULT_ASR_MODEL: &str = "qwen3-asr-flash";
 const DEFAULT_DOUYIN_DOWNLOADER_DIR: &str = r"D:\agent_prac\douyin-downloader";
 const DOUYIN_DOWNLOADER_DIR_ENV: &str = "MICROCODEX_DOUYIN_DOWNLOADER_DIR";
 const BUNDLED_RUNTIME_ROOT_ENV: &str = "MICROCODEX_BUNDLED_RUNTIME_ROOT";
+const BUNDLED_FFMPEG_ENV: &str = "MICROCODEX_FFMPEG";
+const BUNDLED_FFPROBE_ENV: &str = "MICROCODEX_FFPROBE";
 const PORTABLE_ROOT_ENV: &str = "MICROCODEX_PORTABLE_ROOT";
 const PORTABLE_MARKER_FILE: &str = "portable.mode";
 const JOB_POLL_INTERVAL_MS: u64 = 900;
@@ -982,6 +984,12 @@ fn prepend_process_path(dir: &Path) -> Result<(), String> {
 
 fn apply_bundled_runtime_process_env(runtime_root: &Path) -> Result<(), String> {
     std::env::set_var(BUNDLED_RUNTIME_ROOT_ENV, runtime_root);
+    if let Some(ffmpeg_path) = bundled_ffmpeg_path() {
+        std::env::set_var(BUNDLED_FFMPEG_ENV, ffmpeg_path);
+    }
+    if let Some(ffprobe_path) = bundled_ffprobe_path() {
+        std::env::set_var(BUNDLED_FFPROBE_ENV, ffprobe_path);
+    }
     if let Some(ffmpeg_bin) = bundled_ffmpeg_bin_dir() {
         prepend_process_path(&ffmpeg_bin)?;
     }

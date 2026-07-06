@@ -9,12 +9,13 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
 use crate::media::validate_video_file_l0;
-use crate::{Result, VideoAgentError};
+use crate::{ffmpeg_command, Result, VideoAgentError};
 
 /// Width cap (pixels) applied to VL frames; height keeps aspect ratio.
 pub const DEFAULT_MAX_WIDTH: i64 = 768;
@@ -91,7 +92,7 @@ fn scene_keyframes(path: &Path, cap: usize, scale: Option<i64>) -> Result<Vec<Ve
     // Grab extra so even downsampling has material; still bounded for long clips.
     let frames_cap = cap.saturating_mul(3).clamp(1, MAX_FRAMES * 3);
 
-    let output = Command::new("ffmpeg")
+    let output = ffmpeg_command()
         .args(["-y", "-v", "error"])
         .arg("-i")
         .arg(path)
@@ -126,7 +127,7 @@ fn uniform_keyframes(
         let timestamp = duration * (i as f64 + 1.0) / (n as f64 + 1.0);
         let out = dir.path.join(format!("u_{i:03}.jpg"));
 
-        let mut command = Command::new("ffmpeg");
+        let mut command = ffmpeg_command();
         command
             .args(["-y", "-v", "error"])
             .arg("-ss")

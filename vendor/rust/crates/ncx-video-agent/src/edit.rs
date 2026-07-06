@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
 
 use serde_json::{json, Value};
 
-use crate::{Result, VideoAgentError};
+use crate::{ffmpeg_command, Result, VideoAgentError};
 
 #[derive(Debug, Clone)]
 pub struct RenderedShot {
@@ -200,7 +201,7 @@ fn assemble_shot_clip(
     })?;
     let assembled_path = work_dir.join(format!("{}.mp4", sanitize_filename(&shot.shot_id)));
 
-    let mut command = Command::new("ffmpeg");
+    let mut command = ffmpeg_command();
     command.args(["-y", "-v", "error"]).arg("-i").arg(clip_path);
     if let Some(audio_path) = &audio_path {
         command.arg("-i").arg(audio_path);
@@ -277,7 +278,7 @@ fn concat_clips(clips: &[(String, PathBuf)], dest: &Path, out_dir: &Path) -> Res
     std::fs::write(&list_path, listing)
         .map_err(|err| VideoAgentError::Ffmpeg(format!("write concat list failed: {err}")))?;
 
-    let output = Command::new("ffmpeg")
+    let output = ffmpeg_command()
         .args(["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i"])
         .arg(&list_path)
         .args(["-c", "copy"])

@@ -1,9 +1,10 @@
 use std::path::Path;
+#[cfg(test)]
 use std::process::Command;
 
 use serde_json::{json, Value};
 
-use crate::{Result, VideoAgentError};
+use crate::{ffprobe_command, Result, VideoAgentError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaProbe {
@@ -63,7 +64,7 @@ pub fn validate_video_file_l0(
         ));
     }
 
-    let output = Command::new("ffprobe")
+    let output = ffprobe_command()
         .args([
             "-v",
             "error",

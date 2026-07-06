@@ -4,7 +4,7 @@ This file freezes the initial version boundaries for the new standalone project.
 
 ## Release policy
 
-- project lifecycle start: `0.1.0-alpha.4`
+- project lifecycle start: `0.1.0-alpha.5`
 - first internal dogfood target: `0.1.x`
 - first external pilot target: `0.2.0-beta.1`
 - first stable customer deployment target: `1.0.0`

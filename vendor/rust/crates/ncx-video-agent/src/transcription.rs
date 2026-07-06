@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,7 +11,7 @@ use serde_json::{json, Value};
 
 use crate::media::validate_video_file_l0;
 use crate::runtime_config::P1ExternalConfig;
-use crate::{ResolvedSetting, Result, VideoAgentError};
+use crate::{ffmpeg_command, ffprobe_command, ResolvedSetting, Result, VideoAgentError};
 
 const DEFAULT_ASR_MODEL: &str = "qwen3-asr-flash";
 const FILETRANS_ASR_MODEL: &str = "qwen3-asr-flash-filetrans";
@@ -375,7 +376,7 @@ fn prepare_audio_for_transcription(audio_path: &Path) -> Result<PreparedTranscri
 }
 
 fn transcode_audio_for_transcription(input_path: &Path, output_path: &Path) -> Result<()> {
-    let output = Command::new("ffmpeg")
+    let output = ffmpeg_command()
         .args(["-y", "-v", "error"])
         .arg("-i")
         .arg(input_path)
@@ -785,7 +786,7 @@ fn audio_size_exceeds_inline_limit(audio_path: &Path) -> bool {
 }
 
 fn probe_audio_duration_seconds(audio_path: &Path) -> Result<f64> {
-    let output = Command::new("ffprobe")
+    let output = ffprobe_command()
         .args([
             "-v",
             "error",
@@ -826,7 +827,7 @@ fn split_audio_for_transcription(audio_path: &Path, output_dir: &Path) -> Result
     })?;
 
     let output_pattern = output_dir.join("segment_%03d.mp3");
-    let output = Command::new("ffmpeg")
+    let output = ffmpeg_command()
         .args(["-y", "-v", "error"])
         .arg("-i")
         .arg(audio_path)
@@ -988,7 +989,7 @@ fn extract_audio_wav(video_path: &Path) -> Result<Option<PathBuf>> {
     }
 
     let audio_path = temp_audio_path("wav");
-    let output = Command::new("ffmpeg")
+    let output = ffmpeg_command()
         .args(["-y", "-v", "error"])
         .arg("-i")
         .arg(video_path)
