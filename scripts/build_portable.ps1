@@ -2,6 +2,7 @@ param(
   [string]$PortableRoot = "",
   [string]$WebView2RuntimeDir = "",
   [string]$BundleRuntimeDir = "",
+  [string]$RustTarget = "x86_64-pc-windows-gnu",
   [switch]$SkipBundlePrepare,
   [switch]$SkipZip
 )
@@ -121,14 +122,14 @@ Prepare-FixedRuntimeBuildPath -Source $resolvedWebView2RuntimeDir -Target $build
 
 Push-Location $ProjectRoot
 try {
-  & npx tauri build --target x86_64-pc-windows-gnu --no-bundle -c src-tauri/tauri.portable.conf.json
+  & npx tauri build --target $RustTarget --no-bundle -c src-tauri/tauri.portable.conf.json
 } finally {
   Pop-Location
   Remove-PathSafe $buildFixedRuntimePath
 }
 
-$builtExe = Join-Path $ProjectRoot "src-tauri\target\x86_64-pc-windows-gnu\release\microcodex-short-video-workbench.exe"
-$builtFixedRuntimeDir = Join-Path $ProjectRoot "src-tauri\target\x86_64-pc-windows-gnu\release\Microsoft.WebView2.FixedVersionRuntime"
+$builtExe = Join-Path $ProjectRoot ("src-tauri\target\{0}\release\microcodex-short-video-workbench.exe" -f $RustTarget)
+$builtFixedRuntimeDir = Join-Path $ProjectRoot ("src-tauri\target\{0}\release\Microsoft.WebView2.FixedVersionRuntime" -f $RustTarget)
 if (-not (Test-Path $builtExe)) {
   throw "Built executable not found: $builtExe"
 }

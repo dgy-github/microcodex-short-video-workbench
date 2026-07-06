@@ -1,0 +1,102 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Optional release tag. Defaults to v<package.json version>.
+        required: false
+        type: string
+      publish_release:
+        description: Publish the release after uploading assets
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $package = Get-Content package.json | ConvertFrom-Json
+          $version = $package.version
+          $tag = if ('${{ inputs.tag }}') { '${{ inputs.tag }}' } else { "v$version" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "installer_path=src-tauri/target/release/bundle/nsis/MicrocodeX Short Video Workbench_${version}_x64-setup.exe" >> $env:GITHUB_OUTPUT
+          "portable_path=dist-portable/mcx-portable_${version}_x64.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Build installer
+        run: npx tauri build --bundles nsis
+
+      - name: Build portable package
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\scripts\build_portable.ps1 -RustTarget x86_64-pc-windows-msvc
+
+      - name: Ensure release exists
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.meta.outputs.tag }}'
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $notes = @(
+              'Alpha 4 fixes bundled ffprobe resolution on clean Windows installs.',
+              '',
+              'Highlights:',
+              '- prepend bundled ffmpeg/ffprobe runtime to process PATH',
+              '- start the worker after bundled runtime preparation completes',
+              '- expose FFprobe status in environment checks'
+            ) -join [Environment]::NewLine
+            $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.txt"
+            $notes | Set-Content -Path $notesPath -Encoding UTF8
+            gh release create $tag --draft --prerelease --title $tag --notes-file $notesPath
+          }
+
+      - name: Upload release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload '${{ steps.meta.outputs.tag }}' '${{ steps.meta.outputs.installer_path }}' --clobber
+          gh release upload '${{ steps.meta.outputs.tag }}' '${{ steps.meta.outputs.portable_path }}' --clobber
+
+      - name: Publish release
+        if: ${{ inputs.publish_release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit '${{ steps.meta.outputs.tag }}' --draft=false --prerelease --title '${{ steps.meta.outputs.tag }}'
