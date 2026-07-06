@@ -217,6 +217,53 @@
     };
   };
 
+  type ManualMaterialDraftFile = {
+    sourceJobId: string;
+    updatedAtMs: number;
+    platformLabel: string;
+    versionLabel: string;
+    focusLabel: string;
+    tweakLabels: string[];
+    topic: string;
+    audience: string;
+    persona: string;
+    tone: string;
+    hook: string;
+    body: string[];
+    ending: string;
+    visualBrief: string;
+    spokenBrief: string;
+    reusablePrompt: string;
+    fullPrompt: string;
+    titleCandidates: string[];
+    coverCopyCandidates: string[];
+    promoCopy: string[];
+  };
+
+  type ManualMaterialDraftView = {
+    topic: string;
+    audience: string;
+    persona: string;
+    tone: string;
+    hook: string;
+    bodyText: string;
+    ending: string;
+    visualBrief: string;
+    spokenBrief: string;
+    reusablePrompt: string;
+    fullPrompt: string;
+    titleCandidatesText: string;
+    coverCopyCandidatesText: string;
+    promoCopyText: string;
+  };
+
+  type ManualMaterialDraftSaveResult = {
+    draftPath: string;
+    promptPath: string;
+    markdownPath: string;
+    updatedAtMs: number;
+  };
+
   type CompetitorSourceSpec = {
     kind: SourceKind;
     value: string;
@@ -803,6 +850,10 @@
   let promptVersion: PromptVersionKey = "full";
   let promptFocus: PromptFocusKey = "balanced";
   let activePromptTweaks: PromptTweakKey[] = [];
+  let manualMaterialDraft: ManualMaterialDraftView | null = null;
+  let manualMaterialSaving = false;
+  let manualMaterialAutoSyncPrompt = true;
+  let manualMaterialLastSaveResult: ManualMaterialDraftSaveResult | null = null;
 
   let recentJobs: JobView[] = [];
   let latestFinishedJob: JobView | undefined;
@@ -1458,6 +1509,164 @@
     ].join("\n");
   }
 
+  function textareaLines(value: string): string[] {
+    return uniqueCleanLines(value.split(/\r?\n/));
+  }
+
+  function joinTextareaLines(values: Array<string | null | undefined>): string {
+    return uniqueCleanLines(values).join("\n");
+  }
+
+  function buildManualMaterialDraftFromPack(
+    pack: MaterialPackView,
+    promptText: string,
+  ): ManualMaterialDraftView {
+    const localized = localizedPromptMaterial(pack);
+    return {
+      topic: localized.topic,
+      audience: localized.audience,
+      persona: localized.persona,
+      tone: localized.tone,
+      hook: localized.hook,
+      bodyText: joinTextareaLines(localized.scriptBody),
+      ending: localized.ending,
+      visualBrief: localized.visualBrief,
+      spokenBrief: localized.spokenBrief,
+      reusablePrompt: localized.reusablePrompt,
+      fullPrompt: cleanText(promptText),
+      titleCandidatesText: joinTextareaLines(localized.titleCandidates),
+      coverCopyCandidatesText: joinTextareaLines(localized.coverCandidates),
+      promoCopyText: joinTextareaLines(localized.promoCopy),
+    };
+  }
+
+  function hydrateManualMaterialDraftView(file: ManualMaterialDraftFile): ManualMaterialDraftView {
+    return {
+      topic: cleanText(file.topic),
+      audience: cleanText(file.audience),
+      persona: cleanText(file.persona),
+      tone: cleanText(file.tone),
+      hook: cleanText(file.hook),
+      bodyText: joinTextareaLines(file.body),
+      ending: cleanText(file.ending),
+      visualBrief: cleanText(file.visualBrief),
+      spokenBrief: cleanText(file.spokenBrief),
+      reusablePrompt: cleanText(file.reusablePrompt),
+      fullPrompt: cleanText(file.fullPrompt),
+      titleCandidatesText: joinTextareaLines(file.titleCandidates),
+      coverCopyCandidatesText: joinTextareaLines(file.coverCopyCandidates),
+      promoCopyText: joinTextareaLines(file.promoCopy),
+    };
+  }
+
+  function serializeManualMaterialDraft(view: ManualMaterialDraftView): ManualMaterialDraftFile {
+    return {
+      sourceJobId: materialPack?.job_id ?? selectedMaterialJobId,
+      updatedAtMs: Date.now(),
+      platformLabel: currentPromptPlatformOption().label,
+      versionLabel: currentPromptVersionOption().label,
+      focusLabel: currentPromptFocusOption().label,
+      tweakLabels: activePromptTweakOptions().map((option) => option.label),
+      topic: cleanText(view.topic),
+      audience: cleanText(view.audience),
+      persona: cleanText(view.persona),
+      tone: cleanText(view.tone),
+      hook: cleanText(view.hook),
+      body: textareaLines(view.bodyText),
+      ending: cleanText(view.ending),
+      visualBrief: cleanText(view.visualBrief),
+      spokenBrief: cleanText(view.spokenBrief),
+      reusablePrompt: cleanText(view.reusablePrompt),
+      fullPrompt: cleanText(view.fullPrompt),
+      titleCandidates: textareaLines(view.titleCandidatesText),
+      coverCopyCandidates: textareaLines(view.coverCopyCandidatesText),
+      promoCopy: textareaLines(view.promoCopyText),
+    };
+  }
+
+  function buildManualMaterialPreview(view: ManualMaterialDraftView): string {
+    const bodyLines = textareaLines(view.bodyText);
+    const titleLines = textareaLines(view.titleCandidatesText);
+    const coverLines = textareaLines(view.coverCopyCandidatesText);
+    const promoLines = textareaLines(view.promoCopyText);
+    const tweakLabels = activePromptTweakOptions().map((option) => option.label).join(" / ") || "未启用";
+
+    return [
+      `主题: ${cleanText(view.topic) || "未填写"}`,
+      `受众: ${cleanText(view.audience) || "未填写"}`,
+      `目标平台: ${currentPromptPlatformOption().label}`,
+      `提示词版本: ${currentPromptVersionOption().label}`,
+      `优化目标: ${currentPromptFocusOption().label}`,
+      `调优项: ${tweakLabels}`,
+      "",
+      "口播结构:",
+      `- 开场钩子: ${cleanText(view.hook) || "未填写"}`,
+      ...(bodyLines.length ? bodyLines.map((line, index) => `- 正文要点 ${index + 1}: ${line}`) : ["- 正文要点: 未填写"]),
+      `- 收尾: ${cleanText(view.ending) || "未填写"}`,
+      "",
+      `visual_brief: ${cleanText(view.visualBrief) || "未填写"}`,
+      "",
+      `spoken_brief: ${cleanText(view.spokenBrief) || "未填写"}`,
+      "",
+      `reusable_prompt: ${cleanText(view.reusablePrompt) || "未填写"}`,
+      "",
+      "标题候选:",
+      titleLines.length ? numberedLines(titleLines) : "1. 暂无标题候选",
+      "",
+      "封面文案:",
+      coverLines.length ? bulletedLines(coverLines) : "- 暂无封面文案",
+      "",
+      "宣传短句:",
+      promoLines.length ? bulletedLines(promoLines) : "- 暂无宣传短句",
+      "",
+      "完整提示词:",
+      cleanText(view.fullPrompt) || "未填写",
+    ].join("\n");
+  }
+
+  function cloneManualMaterialDraftFromCurrentPack(showNotice = true) {
+    if (!materialPack) return;
+    manualMaterialDraft = buildManualMaterialDraftFromPack(materialPack, materialPromptText);
+    manualMaterialAutoSyncPrompt = true;
+    manualMaterialLastSaveResult = null;
+    if (showNotice) {
+      materialTone = "good";
+      materialMessage = "已从当前素材包复刻一份可手工改写的新视频素材草稿。";
+    }
+  }
+
+  function syncManualMaterialPromptFromCurrent(showNotice = true) {
+    if (!manualMaterialDraft) return;
+    manualMaterialDraft = {
+      ...manualMaterialDraft,
+      fullPrompt: cleanText(materialPromptText),
+    };
+    manualMaterialAutoSyncPrompt = true;
+    if (showNotice) {
+      materialTone = "good";
+      materialMessage = "已把当前完整提示词带入人工改稿区。";
+    }
+  }
+
+  async function saveManualMaterialDraft() {
+    if (!manualMaterialDraft || !selectedMaterialJobId) return;
+    manualMaterialSaving = true;
+    try {
+      const result = await invoke<ManualMaterialDraftSaveResult>("save_job_manual_material_draft", {
+        jobId: selectedMaterialJobId,
+        draft: serializeManualMaterialDraft(manualMaterialDraft),
+      });
+      manualMaterialLastSaveResult = result;
+      materialTone = "good";
+      materialMessage = `已保存新素材草稿，并同步写入 ${result.draftPath}。`;
+    } catch (error) {
+      materialTone = "warn";
+      materialMessage = `保存新素材草稿失败：${stringifyError(error)}`;
+    } finally {
+      manualMaterialSaving = false;
+    }
+  }
+
   function toggleCompetitorMetric(key: CompetitorMetricKey) {
     if (activeCompetitorMetrics.includes(key)) {
       activeCompetitorMetrics = activeCompetitorMetrics.filter((value) => value !== key);
@@ -1571,6 +1780,7 @@
     materialTab = "prompt";
     materialPromptText = buildFullMaterialPrompt(competitorPack);
     lastMaterialPromptSignature = materialPromptSignature(competitorPack);
+    cloneManualMaterialDraftFromCurrentPack(false);
     materialTone = "good";
     materialMessage = `已同步竞品分析建议：${competitorRecommendedTweakOptionsList
       .map((option) => option.label)
@@ -1734,6 +1944,17 @@
     } catch (error) {
       settingsTone = "warn";
       settingsMessage = `打开环境引导脚本失败：${stringifyError(error)}`;
+    }
+  }
+
+  async function runDouyinCookieLogin() {
+    try {
+      const message = await invoke<string>("run_douyin_cookie_login");
+      settingsTone = "good";
+      settingsMessage = `${message} 完成后点一次“重新检查”，确认 Cookie 已写回。`;
+    } catch (error) {
+      settingsTone = "warn";
+      settingsMessage = `启动抖音登录失败：${stringifyError(error)}`;
     }
   }
 
@@ -1904,14 +2125,22 @@
     loadingMaterialPack = true;
     clearMaterialPromptRewriteTimer();
     try {
-      const nextPack = await invoke<MaterialPackView>("read_job_material_pack", { jobId });
+      const [nextPack, savedDraft] = await Promise.all([
+        invoke<MaterialPackView>("read_job_material_pack", { jobId }),
+        invoke<ManualMaterialDraftFile>("read_job_manual_material_draft", { jobId }).catch(() => null),
+      ]);
       materialPack = nextPack;
       materialPromptText = buildFullMaterialPrompt(nextPack);
       lastMaterialPromptSignature = materialPromptSignature(nextPack);
       materialPromptGeneratedByModel = "";
       materialPromptUsage = null;
       materialPromptRegenerating = false;
-      materialMessage = "";
+      manualMaterialDraft = savedDraft
+        ? hydrateManualMaterialDraftView(savedDraft)
+        : buildManualMaterialDraftFromPack(nextPack, materialPromptText);
+      manualMaterialAutoSyncPrompt = !savedDraft;
+      manualMaterialLastSaveResult = null;
+      materialMessage = savedDraft ? "已载入素材包，并恢复上次保存的新视频素材草稿。" : "";
       materialTone = "good";
       loadedMaterialJobId = jobId;
     } catch (error) {
@@ -1921,6 +2150,9 @@
       materialPromptGeneratedByModel = "";
       materialPromptUsage = null;
       materialPromptRegenerating = false;
+      manualMaterialDraft = null;
+      manualMaterialAutoSyncPrompt = true;
+      manualMaterialLastSaveResult = null;
       materialTone = "warn";
       materialMessage = `读取素材包失败：${stringifyError(error)}`;
       loadedMaterialJobId = "";
@@ -1965,6 +2197,12 @@
     const signature = materialPromptSignature(materialPack);
     const templatePrompt = buildFullMaterialPrompt(materialPack);
     materialPromptText = templatePrompt;
+    if (manualMaterialDraft && manualMaterialAutoSyncPrompt) {
+      manualMaterialDraft = {
+        ...manualMaterialDraft,
+        fullPrompt: cleanText(templatePrompt),
+      };
+    }
     lastMaterialPromptSignature = signature;
     materialPromptGeneratedByModel = "";
     materialPromptUsage = null;
@@ -1994,6 +2232,12 @@
       });
       if (requestSeq !== materialPromptRewriteSeq) return;
       materialPromptText = cleanText(result.prompt) || templatePrompt;
+      if (manualMaterialDraft && manualMaterialAutoSyncPrompt) {
+        manualMaterialDraft = {
+          ...manualMaterialDraft,
+          fullPrompt: cleanText(materialPromptText),
+        };
+      }
       materialPromptGeneratedByModel = result.generatedByModel;
       materialPromptUsage = {
         promptTokens: result.llmUsage?.prompt_tokens ?? 0,
@@ -2179,6 +2423,9 @@
       loadedMaterialJobId = "";
       materialPack = null;
       materialPromptText = "";
+      manualMaterialDraft = null;
+      manualMaterialAutoSyncPrompt = true;
+      manualMaterialLastSaveResult = null;
       selectedCompetitorJobId = "";
       loadedCompetitorJobId = "";
       competitorPack = null;
@@ -2252,6 +2499,12 @@
     const signature = materialPromptSignature(materialPack);
     if (signature !== lastMaterialPromptSignature) {
       materialPromptText = buildFullMaterialPrompt(materialPack);
+      if (manualMaterialDraft && manualMaterialAutoSyncPrompt) {
+        manualMaterialDraft = {
+          ...manualMaterialDraft,
+          fullPrompt: cleanText(materialPromptText),
+        };
+      }
       lastMaterialPromptSignature = signature;
       materialPromptGeneratedByModel = "";
       materialPromptUsage = null;
@@ -2337,6 +2590,7 @@
                 <h3>交付环境检查</h3>
                 <div class="actions">
                   <button type="button" class="btn" on:click={openEnvironmentPanel}>打开详细检查</button>
+                  <button type="button" class="btn" on:click={() => void runDouyinCookieLogin()}>抖音登录 / 获取 Cookie</button>
                   <button type="button" class="btn" on:click={() => void openEnvironmentSetupScript()}>打开引导脚本</button>
                   <button type="button" class="btn primary" on:click={() => void loadEnvironmentReport()} disabled={loadingEnvironmentReport}>
                     {loadingEnvironmentReport ? "检查中…" : "重新检查"}
@@ -2679,7 +2933,7 @@
                 <tbody>
                   {#if jobs.length}
                     {#each jobs as job}
-                      <tr>
+                      <tr class:selected-log-row={selectedLogJob?.id === job.id}>
                         <td>
                           <div class="queue-name">{job.name}</div>
                           <div class="small muted mono">{job.id}</div>
@@ -2774,7 +3028,12 @@
               <div class="panel-head">
                 <h3>阶段日志</h3>
                 <div class="panel-head-meta">
-                  <div class="small muted">{selectedLogJob.name}</div>
+                  <div class="log-context">
+                    <span class="small muted">当前查看任务</span>
+                    <strong>{selectedLogJob.name}</strong>
+                    <span class={`status ${selectedLogJob.status}`}>{statusLabel(selectedLogJob.status)}</span>
+                    <span class="small muted mono">{selectedLogJob.id}</span>
+                  </div>
                   <div class="small muted">
                     {refreshingStageLog
                       ? "Auto-refreshing..."
@@ -3024,6 +3283,148 @@
                     <div class="code-block prompt-block">{materialPromptText}</div>
                     <div class="section-label">素材包内置草稿</div>
                     <div class="code-block prompt-block">{buildPromptDraftBlock(materialPack)}</div>
+                    {#if manualMaterialDraft}
+                      <div class="section-label">人工改稿 / 新视频素材草稿</div>
+                      <div class="manual-draft-surface stack">
+                        <div class="manual-draft-toolbar">
+                          <div class="small muted">
+                            这里可以把当前提示词复刻出来，人工修改后保存成新视频素材草稿。
+                          </div>
+                          <div class="table-actions">
+                            <button type="button" class="btn" on:click={() => cloneManualMaterialDraftFromCurrentPack()}>
+                              从当前素材包复刻
+                            </button>
+                            <button type="button" class="btn" on:click={() => syncManualMaterialPromptFromCurrent()}>
+                              带入当前完整提示词
+                            </button>
+                            <button
+                              type="button"
+                              class="btn primary"
+                              on:click={() => void saveManualMaterialDraft()}
+                              disabled={manualMaterialSaving}
+                            >
+                              {manualMaterialSaving ? "保存中..." : "保存新素材草稿"}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div class="manual-sync-row">
+                          <span class={`status ${manualMaterialAutoSyncPrompt ? "ok" : "warn"}`}>
+                            {manualMaterialAutoSyncPrompt ? "提示词跟随当前版本" : "提示词已切到手工改稿"}
+                          </span>
+                          <div class="small muted">
+                            {manualMaterialAutoSyncPrompt
+                              ? "上方平台 / 版本 / 调优切换后，这里的完整提示词会自动跟随。"
+                              : "你已经手工改过完整提示词；需要重新同步时，点“带入当前完整提示词”。"}
+                          </div>
+                        </div>
+
+                        <div class="manual-draft-grid">
+                          <div class="stack">
+                            <div class="field-grid">
+                              <div class="field">
+                                <label for="manual-topic">新视频主题</label>
+                                <input id="manual-topic" bind:value={manualMaterialDraft.topic} />
+                              </div>
+                              <div class="field">
+                                <label for="manual-audience">目标受众</label>
+                                <input id="manual-audience" bind:value={manualMaterialDraft.audience} />
+                              </div>
+                            </div>
+
+                            <div class="field-grid">
+                              <div class="field">
+                                <label for="manual-persona">人物设定</label>
+                                <input id="manual-persona" bind:value={manualMaterialDraft.persona} />
+                              </div>
+                              <div class="field">
+                                <label for="manual-tone">表达气质</label>
+                                <input id="manual-tone" bind:value={manualMaterialDraft.tone} />
+                              </div>
+                            </div>
+
+                            <div class="field">
+                              <label for="manual-full-prompt">完整提示词（可直接复制去生成）</label>
+                              <textarea
+                                id="manual-full-prompt"
+                                class="prompt-editor-input"
+                                bind:value={manualMaterialDraft.fullPrompt}
+                                on:input={() => (manualMaterialAutoSyncPrompt = false)}
+                              ></textarea>
+                            </div>
+
+                            <div class="field">
+                              <label for="manual-hook">开场钩子</label>
+                              <textarea id="manual-hook" bind:value={manualMaterialDraft.hook}></textarea>
+                            </div>
+
+                            <div class="field">
+                              <label for="manual-body">正文要点（每行 1 条）</label>
+                              <textarea id="manual-body" class="tall-textarea" bind:value={manualMaterialDraft.bodyText}></textarea>
+                            </div>
+
+                            <div class="field">
+                              <label for="manual-ending">收尾</label>
+                              <textarea id="manual-ending" bind:value={manualMaterialDraft.ending}></textarea>
+                            </div>
+
+                            <div class="field">
+                              <label for="manual-visual">visual_brief</label>
+                              <textarea id="manual-visual" class="tall-textarea" bind:value={manualMaterialDraft.visualBrief}></textarea>
+                            </div>
+
+                            <div class="field">
+                              <label for="manual-spoken">spoken_brief</label>
+                              <textarea id="manual-spoken" bind:value={manualMaterialDraft.spokenBrief}></textarea>
+                            </div>
+
+                            <div class="field">
+                              <label for="manual-reusable">reusable_prompt</label>
+                              <textarea id="manual-reusable" class="tall-textarea" bind:value={manualMaterialDraft.reusablePrompt}></textarea>
+                            </div>
+
+                            <div class="field">
+                              <label for="manual-titles">标题候选（每行 1 条）</label>
+                              <textarea id="manual-titles" bind:value={manualMaterialDraft.titleCandidatesText}></textarea>
+                            </div>
+
+                            <div class="field">
+                              <label for="manual-covers">封面文案（每行 1 条）</label>
+                              <textarea id="manual-covers" bind:value={manualMaterialDraft.coverCopyCandidatesText}></textarea>
+                            </div>
+
+                            <div class="field">
+                              <label for="manual-promo">宣传短句（每行 1 条）</label>
+                              <textarea id="manual-promo" bind:value={manualMaterialDraft.promoCopyText}></textarea>
+                            </div>
+                          </div>
+
+                          <div class="stack">
+                            <div class="manual-preview-meta">
+                              <div class="kv"><div class="k">目标平台</div><div class="v">{currentPromptPlatformOption().label}</div></div>
+                              <div class="kv"><div class="k">提示词版本</div><div class="v">{currentPromptVersionOption().label}</div></div>
+                              <div class="kv"><div class="k">优化目标</div><div class="v">{currentPromptFocusOption().label}</div></div>
+                              <div class="kv"><div class="k">调优项</div><div class="v">{activePromptTweakOptions().length ? activePromptTweakOptions().map((option) => option.label).join(" / ") : "未启用"}</div></div>
+                              <div class="kv"><div class="k">来源任务</div><div class="v">{selectedMaterialJob?.name ?? "未选择"}</div></div>
+                            </div>
+
+                            <div class="section-label">新素材预览</div>
+                            <div class="code-block prompt-block">{buildManualMaterialPreview(manualMaterialDraft)}</div>
+
+                            {#if manualMaterialLastSaveResult}
+                              <div class="guide-list">
+                                <div class="guide-item">
+                                  <strong>已落盘文件</strong>
+                                  <div class="small muted mono">{manualMaterialLastSaveResult.draftPath}</div>
+                                  <div class="small muted mono">{manualMaterialLastSaveResult.promptPath}</div>
+                                  <div class="small muted mono">{manualMaterialLastSaveResult.markdownPath}</div>
+                                </div>
+                              </div>
+                            {/if}
+                          </div>
+                        </div>
+                      </div>
+                    {/if}
                   </div>
                 {:else}
                   <div class="code-block prompt-block">{buildMaterialTabContent(materialTab, materialPack)}</div>
@@ -3520,6 +3921,7 @@
             <div class="panel-head">
               <h3>部署环境自检</h3>
               <div class="actions">
+                <button type="button" class="btn" on:click={() => void runDouyinCookieLogin()}>抖音登录 / 获取 Cookie</button>
                 <button type="button" class="btn" on:click={() => void openEnvironmentSetupScript()}>打开引导脚本</button>
                 <button type="button" class="btn primary" on:click={() => void loadEnvironmentReport()} disabled={loadingEnvironmentReport}>
                   {loadingEnvironmentReport ? "检查中…" : "重新检查"}

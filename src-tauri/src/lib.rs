@@ -1,11 +1,12 @@
 use ncx_video_agent::{
     encode_frame, extract_keyframes, extract_keyframes_scaled, request_reverse_prompt,
-    request_subtitle_ocr, request_transcription, validate_video_file_l0, AsrEndpoint,
-    P1ExternalConfig, VlEndpoint, OCR_MAX_WIDTH,
+    request_subtitle_ocr, request_transcription_artifact, validate_video_file_l0, AsrEndpoint,
+    P1ExternalConfig, TranscriptionArtifact, VlEndpoint, OCR_MAX_WIDTH,
 };
-use reqwest::blocking::Client;
+use reqwest::{blocking::Client, header::LOCATION, redirect::Policy, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -34,6 +35,7 @@ const BUNDLED_RUNTIME_ROOT_ENV: &str = "MICROCODEX_BUNDLED_RUNTIME_ROOT";
 const PORTABLE_ROOT_ENV: &str = "MICROCODEX_PORTABLE_ROOT";
 const PORTABLE_MARKER_FILE: &str = "portable.mode";
 const JOB_POLL_INTERVAL_MS: u64 = 900;
+const REQUIRED_COOKIE_KEYS: [&str; 4] = ["ttwid", "msToken", "odin_tt", "passport_csrf_token"];
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -445,6 +447,60 @@ struct MaterialPackFile {
     video_prompt_draft: MaterialVideoPromptDraft,
     #[serde(default)]
     evidence_refs: MaterialEvidenceRefs,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ManualMaterialDraftFile {
+    #[serde(default)]
+    source_job_id: String,
+    #[serde(default)]
+    updated_at_ms: u64,
+    #[serde(default)]
+    platform_label: String,
+    #[serde(default)]
+    version_label: String,
+    #[serde(default)]
+    focus_label: String,
+    #[serde(default)]
+    tweak_labels: Vec<String>,
+    #[serde(default)]
+    topic: String,
+    #[serde(default)]
+    audience: String,
+    #[serde(default)]
+    persona: String,
+    #[serde(default)]
+    tone: String,
+    #[serde(default)]
+    hook: String,
+    #[serde(default)]
+    body: Vec<String>,
+    #[serde(default)]
+    ending: String,
+    #[serde(default)]
+    visual_brief: String,
+    #[serde(default)]
+    spoken_brief: String,
+    #[serde(default)]
+    reusable_prompt: String,
+    #[serde(default)]
+    full_prompt: String,
+    #[serde(default)]
+    title_candidates: Vec<String>,
+    #[serde(default)]
+    cover_copy_candidates: Vec<String>,
+    #[serde(default)]
+    promo_copy: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManualMaterialDraftSaveResult {
+    draft_path: String,
+    prompt_path: String,
+    markdown_path: String,
+    updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -933,10 +989,7 @@ fn prepare_bundled_runtime(app: &AppHandle) -> Result<(), String> {
     };
 
     std::env::set_var(BUNDLED_RUNTIME_ROOT_ENV, &runtime_root);
-    write_text_file(
-        &bundled_runtime_hint_path()?,
-        &runtime_root.display().to_string(),
-    )?;
+    write_text_file(&bundled_runtime_hint_path()?, &path_string(&runtime_root))?;
 
     let source_downloader = runtime_root.join("douyin-downloader");
     if source_downloader.is_dir() {
@@ -971,6 +1024,9 @@ function Resolve-BundledRuntimeRoot() {{
   $hintPath = Join-Path $env:APPDATA "{app_dir}\bootstrap\bundled_runtime_root.txt"
   if (Test-Path $hintPath) {{
     $candidate = (Get-Content $hintPath -Raw).Trim()
+    if ($candidate.StartsWith("\\?\\")) {{
+      $candidate = $candidate.Substring(4)
+    }}
     if ($candidate -and (Test-Path $candidate)) {{
       return $candidate
     }}
@@ -988,13 +1044,24 @@ function Ensure-WingetInstall([string]$Id, [string]$Label) {{
 }}
 
 function Resolve-PythonCommand([string]$BundledRuntimeRoot) {{
-  if ($BundledRuntimeRoot) {{
+  if (-not [string]::IsNullOrWhiteSpace($BundledRuntimeRoot)) {{
     $bundledPython = Join-Path $BundledRuntimeRoot "python\python.exe"
     if (Test-Path $bundledPython) {{
       return $bundledPython
     }}
   }}
   return "python"
+}}
+
+function Resolve-BundledDownloaderSource([string]$BundledRuntimeRoot) {{
+  if ([string]::IsNullOrWhiteSpace($BundledRuntimeRoot)) {{
+    return ""
+  }}
+  $candidate = Join-Path $BundledRuntimeRoot "douyin-downloader"
+  if (Test-Path $candidate) {{
+    return $candidate
+  }}
+  return ""
 }}
 
 function Ensure-ConfigTemplate([string]$TargetDownloaderDir) {{
@@ -1013,11 +1080,67 @@ function Ensure-ConfigTemplate([string]$TargetDownloaderDir) {{
   }}
 }}
 
+function Sync-DownloaderCookieConfig([string]$TargetDownloaderDir, [string]$PythonCmd) {{
+  $configPath = Join-Path $TargetDownloaderDir "config.yml"
+  $cookiesPath = Join-Path $TargetDownloaderDir "config\cookies.json"
+  if (-not (Test-Path $configPath)) {{
+    Write-Warning "config.yml missing, skip cookie sync."
+    return
+  }}
+  if (-not (Test-Path $cookiesPath)) {{
+    Write-Warning "config\\cookies.json missing, skip cookie sync."
+    return
+  }}
+
+  $syncScript = @'
+import json
+import pathlib
+import sys
+import yaml
+
+REQUIRED = ("ttwid", "msToken", "odin_tt", "passport_csrf_token")
+
+def is_placeholder(value):
+    text = (value or "").strip()
+    return (not text) or text.startswith("YOUR_")
+
+config_path = pathlib.Path(sys.argv[1])
+cookies_path = pathlib.Path(sys.argv[2])
+
+cookie_data = json.loads(cookies_path.read_text(encoding="utf-8"))
+if not isinstance(cookie_data, dict):
+    raise SystemExit("cookies.json is not an object")
+
+real_required = [key for key in REQUIRED if isinstance(cookie_data.get(key), str) and not is_placeholder(cookie_data.get(key))]
+if len(real_required) != len(REQUIRED):
+    raise SystemExit("cookies.json does not contain all required real cookies")
+
+loaded = {{}}
+if config_path.exists():
+    parsed = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {{}}
+    if isinstance(parsed, dict):
+        loaded = parsed
+
+loaded["link"] = []
+loaded["cookies"] = {{key: value for key, value in cookie_data.items() if isinstance(value, str)}}
+config_path.write_text(yaml.safe_dump(loaded, allow_unicode=True, sort_keys=False), encoding="utf-8")
+print("config.yml synced from cookies.json")
+'@
+
+  & $PythonCmd -c $syncScript $configPath $cookiesPath
+  if ($LASTEXITCODE -eq 0) {{
+    Write-Host "Cookie login finished. config.yml has been synced and link cleared."
+  }} else {{
+    Write-Warning "Cookie login finished, but config.yml sync failed. Check cookies.json and config.yml."
+  }}
+}}
+
 $BundledRuntimeRoot = Resolve-BundledRuntimeRoot
+$BundledDownloaderSource = Resolve-BundledDownloaderSource $BundledRuntimeRoot
 if (-not $DownloaderDir) {{
   if ($env:{env_name}) {{
     $DownloaderDir = $env:{env_name}
-  }} elseif ($BundledRuntimeRoot -and (Test-Path (Join-Path $BundledRuntimeRoot "douyin-downloader"))) {{
+  }} elseif (-not [string]::IsNullOrWhiteSpace($BundledDownloaderSource)) {{
     $DownloaderDir = Join-Path $env:APPDATA "{app_dir}\bundled-douyin-downloader"
   }} else {{
     $DownloaderDir = "{default_dir}"
@@ -1025,7 +1148,7 @@ if (-not $DownloaderDir) {{
 }}
 
 $PythonCmd = Resolve-PythonCommand $BundledRuntimeRoot
-if ($BundledRuntimeRoot) {{
+if (-not [string]::IsNullOrWhiteSpace($BundledRuntimeRoot)) {{
   $BundledFfmpegBin = Join-Path $BundledRuntimeRoot "ffmpeg\bin"
   if (Test-Path $BundledFfmpegBin) {{
     $env:PATH = "$BundledFfmpegBin;$env:PATH"
@@ -1038,7 +1161,7 @@ if ($BundledRuntimeRoot) {{
 
 Write-Host "== MicrocodeX operator environment setup =="
 Write-Host "DownloaderDir: $DownloaderDir"
-if ($BundledRuntimeRoot) {{
+if (-not [string]::IsNullOrWhiteSpace($BundledRuntimeRoot)) {{
   Write-Host "BundledRuntime: $BundledRuntimeRoot"
 }}
 
@@ -1056,9 +1179,8 @@ if (-not (Test-Command "ffmpeg")) {{
 }}
 
 if (-not (Test-Path $DownloaderDir)) {{
-  if ($BundledRuntimeRoot -and (Test-Path (Join-Path $BundledRuntimeRoot "douyin-downloader"))) {{
-    $bundledDownloader = Join-Path $BundledRuntimeRoot "douyin-downloader"
-    Copy-Item $bundledDownloader $DownloaderDir -Recurse -Force
+  if (-not [string]::IsNullOrWhiteSpace($BundledDownloaderSource)) {{
+    Copy-Item $BundledDownloaderSource $DownloaderDir -Recurse -Force
   }}
 
   if ($DownloaderRepoUrl -and -not (Test-Command "git")) {{
@@ -1091,6 +1213,11 @@ Ensure-ConfigTemplate $DownloaderDir
 if ($RunCookieLogin -and (Test-Path ".\config.yml")) {{
   $env:PYTHONUTF8 = "1"
   & $PythonCmd -m tools.cookie_fetcher --config config.yml
+  if ($LASTEXITCODE -eq 0) {{
+    Sync-DownloaderCookieConfig $DownloaderDir $PythonCmd
+  }} else {{
+    Write-Warning "Cookie fetcher did not finish successfully, skip config sync."
+  }}
 }}
 
 Pop-Location
@@ -1115,7 +1242,16 @@ fn ensure_windows_setup_script() -> Result<PathBuf, String> {
 }
 
 fn path_string(path: &Path) -> String {
-    path.display().to_string()
+    let rendered = path.display().to_string();
+    #[cfg(target_os = "windows")]
+    {
+        return rendered
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&rendered)
+            .to_string();
+    }
+    #[allow(unreachable_code)]
+    rendered
 }
 
 fn prepare_command(command: &mut Command) {
@@ -1176,6 +1312,18 @@ fn job_logs_dir(job_root: &Path) -> PathBuf {
 
 fn material_pack_path(job_root: &Path) -> PathBuf {
     job_output_dir(job_root).join("material_pack.json")
+}
+
+fn manual_material_draft_path(job_root: &Path) -> PathBuf {
+    job_output_dir(job_root).join("manual_material_draft.json")
+}
+
+fn manual_material_prompt_path(job_root: &Path) -> PathBuf {
+    job_output_dir(job_root).join("manual_material_prompt.txt")
+}
+
+fn manual_material_markdown_path(job_root: &Path) -> PathBuf {
+    job_output_dir(job_root).join("manual_material_draft.md")
 }
 
 fn stage_log_path(job_root: &Path) -> PathBuf {
@@ -1361,11 +1509,334 @@ fn line_preview(text: &str) -> String {
         .to_string()
 }
 
-fn cookie_token_names(config_text: &str) -> Vec<&'static str> {
-    ["ttwid", "msToken", "odin_tt", "passport_csrf_token"]
-        .into_iter()
-        .filter(|token| config_text.contains(token))
+fn is_placeholder_cookie_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty() || trimmed.starts_with("YOUR_")
+}
+
+fn cookie_values_from_yaml_text(config_text: &str) -> Vec<(String, String)> {
+    let Ok(parsed) = serde_yaml::from_str::<YamlValue>(config_text) else {
+        return Vec::new();
+    };
+    let Some(cookies) = parsed.get("cookies").and_then(YamlValue::as_mapping) else {
+        return Vec::new();
+    };
+
+    cookies
+        .iter()
+        .filter_map(|(key, value)| {
+            Some((
+                key.as_str()?.to_string(),
+                value.as_str().unwrap_or_default().to_string(),
+            ))
+        })
         .collect()
+}
+
+fn real_cookie_token_names(config_text: &str) -> Vec<&'static str> {
+    let cookies = cookie_values_from_yaml_text(config_text);
+    REQUIRED_COOKIE_KEYS
+        .into_iter()
+        .filter(|token| {
+            cookies
+                .iter()
+                .find(|(key, _)| key == token)
+                .map(|(_, value)| !is_placeholder_cookie_value(value))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn placeholder_cookie_token_names(config_text: &str) -> Vec<&'static str> {
+    let cookies = cookie_values_from_yaml_text(config_text);
+    REQUIRED_COOKIE_KEYS
+        .into_iter()
+        .filter(|token| {
+            cookies
+                .iter()
+                .find(|(key, _)| key == token)
+                .map(|(_, value)| is_placeholder_cookie_value(value))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn load_cookie_json_map(path: &Path) -> Result<Vec<(String, String)>, String> {
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("read {} failed: {e}", path.display()))?;
+    let parsed = serde_json::from_str::<Value>(&text)
+        .map_err(|e| format!("parse {} failed: {e}", path.display()))?;
+    let Some(object) = parsed.as_object() else {
+        return Err(format!("{} does not contain a JSON object", path.display()));
+    };
+    Ok(object
+        .iter()
+        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+        .collect())
+}
+
+fn has_all_required_real_cookies(cookies: &[(String, String)]) -> bool {
+    REQUIRED_COOKIE_KEYS.iter().all(|token| {
+        cookies
+            .iter()
+            .find(|(key, _)| key == token)
+            .map(|(_, value)| !is_placeholder_cookie_value(value))
+            .unwrap_or(false)
+    })
+}
+
+fn cookie_pairs_to_sorted_map(
+    cookies: &[(String, String)],
+) -> std::collections::BTreeMap<String, String> {
+    cookies
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+const SAFE_DOUYIN_FILENAME_TEMPLATE: &str = "{date}_{id}";
+const SAFE_DOUYIN_FOLDER_TEMPLATE: &str = "{date}_{id}";
+
+fn yaml_string_key(key: &str) -> YamlValue {
+    YamlValue::String(key.to_string())
+}
+
+fn upsert_yaml_string(root: &mut YamlMapping, key: &str, value: &str) -> bool {
+    let yaml_key = yaml_string_key(key);
+    let next_value = YamlValue::String(value.to_string());
+    if root.get(&yaml_key) == Some(&next_value) {
+        return false;
+    }
+    root.insert(yaml_key, next_value);
+    true
+}
+
+fn upsert_yaml_bool(root: &mut YamlMapping, key: &str, value: bool) -> bool {
+    let yaml_key = yaml_string_key(key);
+    let next_value = YamlValue::Bool(value);
+    if root.get(&yaml_key) == Some(&next_value) {
+        return false;
+    }
+    root.insert(yaml_key, next_value);
+    true
+}
+
+fn sanitize_legacy_empty_link_block(config_path: &Path) -> Result<bool, String> {
+    if !config_path.is_file() {
+        return Ok(false);
+    }
+
+    let config_text = fs::read_to_string(config_path)
+        .map_err(|e| format!("read {} failed: {e}", config_path.display()))?;
+    let normalized = config_text
+        .replace("link:\r\n  []\r\n", "link: []\r\n")
+        .replace("link:\n  []\n", "link: []\n");
+
+    if normalized == config_text {
+        return Ok(false);
+    }
+
+    write_text_file(config_path, &normalized)?;
+    Ok(true)
+}
+
+fn sanitize_utf8_bom(config_path: &Path) -> Result<bool, String> {
+    if !config_path.is_file() {
+        return Ok(false);
+    }
+
+    let config_text = fs::read_to_string(config_path)
+        .map_err(|e| format!("read {} failed: {e}", config_path.display()))?;
+    let normalized = config_text.strip_prefix('\u{feff}').unwrap_or(&config_text);
+    if normalized == config_text {
+        return Ok(false);
+    }
+
+    write_text_file(config_path, normalized)?;
+    Ok(true)
+}
+
+fn sanitize_multi_document_yaml_file(config_path: &Path) -> Result<bool, String> {
+    if !config_path.is_file() {
+        return Ok(false);
+    }
+
+    let config_text = fs::read_to_string(config_path)
+        .map_err(|e| format!("read {} failed: {e}", config_path.display()))?;
+    if serde_yaml::from_str::<YamlValue>(&config_text).is_ok() {
+        return Ok(false);
+    }
+
+    let mut parsed_docs = Vec::new();
+    for document in serde_yaml::Deserializer::from_str(&config_text) {
+        let value = YamlValue::deserialize(document)
+            .map_err(|e| format!("parse {} failed: {e}", config_path.display()))?;
+        if !matches!(value, YamlValue::Null) {
+            parsed_docs.push(value);
+        }
+    }
+
+    if parsed_docs.len() <= 1 {
+        return Ok(false);
+    }
+
+    let recovered = parsed_docs.pop().ok_or_else(|| {
+        format!(
+            "parse {} failed: YAML documents are empty",
+            config_path.display()
+        )
+    })?;
+    let serialized = serde_yaml::to_string(&recovered)
+        .map_err(|e| format!("serialize {} failed: {e}", config_path.display()))?;
+    write_text_file(config_path, &serialized)?;
+    Ok(true)
+}
+
+fn sync_cookie_json_into_config(
+    config_path: &Path,
+    cookie_json_path: &Path,
+) -> Result<bool, String> {
+    if !config_path.is_file() || !cookie_json_path.is_file() {
+        return Ok(false);
+    }
+
+    let config_text = fs::read_to_string(config_path)
+        .map_err(|e| format!("read {} failed: {e}", config_path.display()))?;
+    let current_cookies = cookie_values_from_yaml_text(&config_text);
+    let cookie_json = load_cookie_json_map(cookie_json_path)?;
+    if !has_all_required_real_cookies(&cookie_json) {
+        return Ok(false);
+    }
+    if cookie_pairs_to_sorted_map(&current_cookies) == cookie_pairs_to_sorted_map(&cookie_json) {
+        return Ok(false);
+    }
+
+    let mut parsed = serde_yaml::from_str::<YamlValue>(&config_text)
+        .map_err(|e| format!("parse {} failed: {e}", config_path.display()))?;
+    let root = if let Some(mapping) = parsed.as_mapping_mut() {
+        mapping
+    } else {
+        parsed = YamlValue::Mapping(YamlMapping::new());
+        parsed
+            .as_mapping_mut()
+            .ok_or_else(|| format!("{} is not a YAML mapping", config_path.display()))?
+    };
+
+    let mut cookie_mapping = YamlMapping::new();
+    for (key, value) in cookie_json {
+        cookie_mapping.insert(YamlValue::String(key), YamlValue::String(value));
+    }
+    root.insert(
+        YamlValue::String("cookies".to_string()),
+        YamlValue::Mapping(cookie_mapping),
+    );
+
+    let serialized = serde_yaml::to_string(&parsed)
+        .map_err(|e| format!("serialize {} failed: {e}", config_path.display()))?;
+    write_text_file(config_path, &serialized)?;
+    Ok(true)
+}
+
+fn clear_downloader_config_links(config_path: &Path) -> Result<bool, String> {
+    if !config_path.is_file() {
+        return Ok(false);
+    }
+
+    let config_text = fs::read_to_string(config_path)
+        .map_err(|e| format!("read {} failed: {e}", config_path.display()))?;
+    let mut parsed = serde_yaml::from_str::<YamlValue>(&config_text)
+        .map_err(|e| format!("parse {} failed: {e}", config_path.display()))?;
+    let root = if let Some(mapping) = parsed.as_mapping_mut() {
+        mapping
+    } else {
+        parsed = YamlValue::Mapping(YamlMapping::new());
+        parsed
+            .as_mapping_mut()
+            .ok_or_else(|| format!("{} is not a YAML mapping", config_path.display()))?
+    };
+
+    let link_key = YamlValue::String("link".to_string());
+    let needs_clear = root
+        .get(&link_key)
+        .and_then(YamlValue::as_sequence)
+        .map(|links| !links.is_empty())
+        .unwrap_or_else(|| root.contains_key(&link_key));
+    if !needs_clear {
+        return Ok(false);
+    }
+
+    root.insert(link_key, YamlValue::Sequence(Vec::new()));
+    let serialized = serde_yaml::to_string(&parsed)
+        .map_err(|e| format!("serialize {} failed: {e}", config_path.display()))?;
+    write_text_file(config_path, &serialized)?;
+    Ok(true)
+}
+
+fn enforce_safe_downloader_output_layout(config_path: &Path) -> Result<bool, String> {
+    if !config_path.is_file() {
+        return Ok(false);
+    }
+
+    let config_text = fs::read_to_string(config_path)
+        .map_err(|e| format!("read {} failed: {e}", config_path.display()))?;
+    let mut parsed = serde_yaml::from_str::<YamlValue>(&config_text)
+        .map_err(|e| format!("parse {} failed: {e}", config_path.display()))?;
+    let root = if let Some(mapping) = parsed.as_mapping_mut() {
+        mapping
+    } else {
+        parsed = YamlValue::Mapping(YamlMapping::new());
+        parsed
+            .as_mapping_mut()
+            .ok_or_else(|| format!("{} is not a YAML mapping", config_path.display()))?
+    };
+
+    let mut changed = false;
+    changed |= upsert_yaml_string(root, "filename_template", SAFE_DOUYIN_FILENAME_TEMPLATE);
+    changed |= upsert_yaml_string(root, "folder_template", SAFE_DOUYIN_FOLDER_TEMPLATE);
+    changed |= upsert_yaml_bool(root, "folderstyle", false);
+
+    if !changed {
+        return Ok(false);
+    }
+
+    let serialized = serde_yaml::to_string(&parsed)
+        .map_err(|e| format!("serialize {} failed: {e}", config_path.display()))?;
+    write_text_file(config_path, &serialized)?;
+    Ok(true)
+}
+
+fn normalize_downloader_runtime_config(downloader_dir: &Path) -> Result<Vec<String>, String> {
+    let config_path = downloader_dir.join("config.yml");
+    let mut notes = Vec::new();
+    if sanitize_utf8_bom(&config_path)? {
+        notes.push("已自动移除 config.yml 的 UTF-8 BOM，避免 Rust 侧 YAML 解析失败。".to_string());
+    }
+    if sanitize_legacy_empty_link_block(&config_path)? {
+        notes.push("已自动修复旧格式的空 link 配置，避免 YAML 解析失败。".to_string());
+    }
+    if sanitize_multi_document_yaml_file(&config_path)? {
+        notes.push("已自动修复被重复追加的 config.yml，多段 YAML 已收敛为单文档。".to_string());
+    }
+    if clear_downloader_config_links(&config_path)? {
+        notes.push("已清空 config.yml 的 link，避免模板链接污染当前任务。".to_string());
+    }
+    if enforce_safe_downloader_output_layout(&config_path)? {
+        notes.push(
+            "Enabled a safe short-path download layout for the bundled Douyin downloader on Windows."
+                .to_string(),
+        );
+    }
+    for candidate in [
+        downloader_dir.join("config").join("cookies.json"),
+        downloader_dir.join(".cookies.json"),
+    ] {
+        if sync_cookie_json_into_config(&config_path, &candidate)? {
+            notes
+                .push("已自动把 config/cookies.json 的真实 Cookie 同步回 config.yml。".to_string());
+            break;
+        }
+    }
+    Ok(notes)
 }
 
 fn has_playwright_chromium_install() -> bool {
@@ -1522,6 +1993,7 @@ fn build_environment_report(
     }
 
     if let Ok(downloader_dir) = downloader_dir_result.as_ref() {
+        let normalize_result = normalize_downloader_runtime_config(downloader_dir);
         let config_path = downloader_dir.join("config.yml");
         if config_path.is_file() {
             let config_text = read_json_file(&config_path).or_else(|_| {
@@ -1530,33 +2002,58 @@ fn build_environment_report(
             });
             match config_text {
                 Ok(text) => {
-                    let tokens = cookie_token_names(&text);
-                    let status = if tokens.len() >= 2 { "ok" } else { "warn" };
+                    let real_tokens = real_cookie_token_names(&text);
+                    let placeholder_tokens = placeholder_cookie_token_names(&text);
+                    let status = if real_tokens.len() == REQUIRED_COOKIE_KEYS.len() {
+                        "ok"
+                    } else {
+                        "warn"
+                    };
+                    let normalized_notes = normalize_result.clone().unwrap_or_default();
                     items.push(EnvironmentCheckItem {
                         key: "douyin_config".to_string(),
                         label: "Downloader 配置与 Cookie".to_string(),
                         status: status.to_string(),
-                        detail: if tokens.is_empty() {
+                        detail: if !normalized_notes.is_empty() && !real_tokens.is_empty() {
+                            format!(
+                                "已修正 {}：{} 当前识别到真实 Cookie token：{}。",
+                                config_path.display(),
+                                normalized_notes.join(" "),
+                                real_tokens.join(", ")
+                            )
+                        } else if !real_tokens.is_empty() {
+                            format!(
+                                "已找到 config.yml，并识别到真实 Cookie token：{}。",
+                                real_tokens.join(", ")
+                            )
+                        } else if !placeholder_tokens.is_empty() {
+                            format!(
+                                "已找到 config.yml，但 Cookie 仍是占位值：{}。",
+                                placeholder_tokens.join(", ")
+                            )
+                        } else {
                             format!(
                                 "已找到 config.yml，但还没识别到常用 Cookie token：{}。",
                                 config_path.display()
                             )
-                        } else {
-                            format!(
-                                "已找到 config.yml，并识别到 Cookie token：{}。",
-                                tokens.join(", ")
-                            )
                         },
-                        action_hint:
-                            "若单条视频下载失败，先在 downloader 目录运行一次 cookie 登录流程。"
-                                .to_string(),
+                        action_hint: if real_tokens.len() == REQUIRED_COOKIE_KEYS.len() {
+                            "无需处理。".to_string()
+                        } else {
+                            "先完成一次浏览器 Cookie 登录；登录脚本结束后会自动把 config/cookies.json 同步回 config.yml，并清空 link。若你是手动替换 cookies.json，再点一次重新检查即可。".to_string()
+                        },
                     });
                 }
                 Err(err) => items.push(EnvironmentCheckItem {
                     key: "douyin_config".to_string(),
                     label: "Downloader 配置与 Cookie".to_string(),
                     status: "warn".to_string(),
-                    detail: err,
+                    detail: match normalize_result {
+                        Ok(notes) if !notes.is_empty() => {
+                            format!("{err}（已执行自动修复：{}）", notes.join(" "))
+                        }
+                        _ => err,
+                    },
                     action_hint: "确认 config.yml 可读，并完成一次浏览器 Cookie 登录。".to_string(),
                 }),
             }
@@ -1742,12 +2239,111 @@ fn summarize_douyin_download_issue(output_text: &str) -> Option<String> {
     }
 }
 
+fn expand_douyin_download_url(url: &str) -> Result<String, String> {
+    if !url.contains("v.douyin.com/") && !url.contains("v.iesdouyin.com/") {
+        return Ok(url.to_string());
+    }
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(Policy::none())
+        .build()
+        .map_err(|e| format!("build douyin short-link client failed: {e}"))?;
+    let mut current = Url::parse(url).map_err(|e| format!("parse douyin short-link failed: {e}"))?;
+
+    for _ in 0..8 {
+        let response = client
+            .get(current.clone())
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+            )
+            .send()
+            .map_err(|e| format!("expand douyin short-link failed: {e}"))?;
+
+        if let Some(url) = canonical_douyin_media_url(response.url().as_str()) {
+            return Ok(url);
+        }
+
+        if response.status().is_redirection() {
+            let Some(location) = response
+                .headers()
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok())
+            else {
+                return Err("douyin short-link redirect missing Location header".to_string());
+            };
+            let next = current
+                .join(location)
+                .or_else(|_| Url::parse(location))
+                .map_err(|e| format!("resolve douyin redirect target failed: {e}"))?;
+
+            if let Some(url) = canonical_douyin_media_url(next.as_str()) {
+                return Ok(url);
+            }
+
+            if next.as_str().starts_with("https://www.douyin.com")
+                && (next.path().is_empty() || next.path() == "/")
+            {
+                return Err(
+                    "这条 v.douyin.com 短链当前被抖音重定向到了首页，通常表示分享态已过期、短链失效，或当前网络环境拿不到真实落地页。请在抖音里重新分享一次，或直接粘贴 www.douyin.com/video/... 长链。"
+                        .to_string(),
+                );
+            }
+
+            current = next;
+            continue;
+        }
+
+        return Ok(response.url().to_string());
+    }
+
+    Err("douyin short-link redirected too many times before reaching a media page".to_string())
+}
+
+fn canonical_douyin_media_url(url: &str) -> Option<String> {
+    extract_douyin_id_by_markers(url, &["/video/", "/share/video/"])
+        .map(|aweme_id| format!("https://www.douyin.com/video/{aweme_id}"))
+        .or_else(|| {
+            extract_douyin_id_by_markers(url, &["/note/", "/share/note/", "/gallery/"])
+                .map(|aweme_id| format!("https://www.douyin.com/note/{aweme_id}"))
+        })
+}
+
+fn extract_douyin_id_by_markers(url: &str, markers: &[&str]) -> Option<String> {
+    for marker in markers {
+        let Some(suffix) = url.split(marker).nth(1) else {
+            continue;
+        };
+        let aweme_id = suffix
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        if !aweme_id.is_empty() {
+            return Some(aweme_id);
+        }
+    }
+    None
+}
+
 fn latest_downloaded_video(root: &Path, started_at: SystemTime) -> Result<PathBuf, String> {
+    latest_downloaded_file_matching(root, started_at, is_video_file)?
+        .ok_or_else(|| format!("no newly downloaded video found under {}", root.display()))
+}
+
+fn latest_downloaded_file_matching(
+    root: &Path,
+    started_at: SystemTime,
+    predicate: fn(&Path) -> bool,
+) -> Result<Option<PathBuf>, String> {
+    if !root.is_dir() {
+        return Ok(None);
+    }
     let mut files = Vec::new();
     collect_files_recursive(root, &mut files)?;
     let mut best_after: Option<(SystemTime, PathBuf)> = None;
 
-    for path in files.into_iter().filter(|path| is_video_file(path)) {
+    for path in files.into_iter().filter(|path| predicate(path)) {
         let modified = path
             .metadata()
             .and_then(|metadata| metadata.modified())
@@ -1762,9 +2358,78 @@ fn latest_downloaded_video(root: &Path, started_at: SystemTime) -> Result<PathBu
         }
     }
 
-    best_after
-        .map(|(_, path)| path)
-        .ok_or_else(|| format!("no newly downloaded video found under {}", root.display()))
+    Ok(best_after.map(|(_, path)| path))
+}
+
+fn files_modified_after(root: &Path, started_at: SystemTime) -> Result<Vec<PathBuf>, String> {
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    collect_files_recursive(root, &mut files)?;
+
+    let mut recent_files = files
+        .into_iter()
+        .filter_map(|path| {
+            let modified = path
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(UNIX_EPOCH);
+            (modified >= started_at).then_some((modified, path))
+        })
+        .collect::<Vec<_>>();
+    recent_files.sort_by_key(|(modified, _)| *modified);
+    Ok(recent_files.into_iter().map(|(_, path)| path).collect())
+}
+
+fn extract_douyin_aweme_id(url: &str) -> Option<String> {
+    extract_douyin_id_by_markers(
+        url,
+        &[
+            "/video/",
+            "/share/video/",
+            "/note/",
+            "/share/note/",
+            "/gallery/",
+        ],
+    )
+}
+
+fn latest_existing_download_for_aweme(
+    root: &Path,
+    aweme_id: &str,
+    predicate: fn(&Path) -> bool,
+) -> Result<Option<PathBuf>, String> {
+    if !root.is_dir() {
+        return Ok(None);
+    }
+
+    let mut files = Vec::new();
+    collect_files_recursive(root, &mut files)?;
+    let mut best_match: Option<(SystemTime, PathBuf)> = None;
+
+    for path in files.into_iter().filter(|path| predicate(path)) {
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !file_name.contains(aweme_id) {
+            continue;
+        }
+        let modified = path
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(UNIX_EPOCH);
+        if best_match
+            .as_ref()
+            .map(|(current, _)| modified > *current)
+            .unwrap_or(true)
+        {
+            best_match = Some((modified, path));
+        }
+    }
+
+    Ok(best_match.map(|(_, path)| path))
 }
 
 fn ingest_local_video(source_value: &str, job_root: &Path) -> Result<Vec<String>, String> {
@@ -1796,10 +2461,12 @@ fn ingest_local_video(source_value: &str, job_root: &Path) -> Result<Vec<String>
 fn ingest_douyin_video(source_value: &str, job_root: &Path) -> Result<Vec<String>, String> {
     ensure_job_layout(job_root)?;
     let downloader_dir = resolve_douyin_downloader_dir()?;
-    let download_url = extract_douyin_url_from_share_text(source_value).ok_or_else(|| {
+    let normalize_notes = normalize_downloader_runtime_config(&downloader_dir)?;
+    let extracted_url = extract_douyin_url_from_share_text(source_value).ok_or_else(|| {
         "未从输入内容里找到可用的抖音链接。请粘贴分享文案中的 https://... 链接，或直接粘贴抖音视频链接。"
             .to_string()
     })?;
+    let download_url = expand_douyin_download_url(&extracted_url)?;
     let started_at = SystemTime::now();
     let mut command = Command::new(resolve_python_program());
     command
@@ -1824,7 +2491,53 @@ fn ingest_douyin_video(source_value: &str, job_root: &Path) -> Result<Vec<String
         return Err(format!("{message}\n下载日志: {}", log_path.display()));
     }
 
-    let downloaded_video = latest_downloaded_video(&downloader_dir.join("Downloaded"), started_at)?;
+    let downloaded_root = downloader_dir.join("Downloaded");
+    let aweme_id_hint = extract_douyin_aweme_id(&download_url);
+    let existing_video = aweme_id_hint
+        .as_deref()
+        .map(|aweme_id| {
+            latest_existing_download_for_aweme(&downloaded_root, aweme_id, is_video_file)
+        })
+        .transpose()?
+        .flatten();
+    let (downloaded_video, reused_existing_download) = if let Ok(path) =
+        latest_downloaded_video(&downloaded_root, started_at)
+    {
+        (path, false)
+    } else if let Some(path) = existing_video {
+        (path, true)
+    } else {
+        let recent_files = files_modified_after(&downloaded_root, started_at)?;
+        if recent_files.is_empty() {
+            return Err(format!(
+                "The Douyin downloader did not write any new files for this run. Download log: {}",
+                log_path.display()
+            ));
+        }
+
+        let sample_path = recent_files.last().cloned().ok_or_else(|| {
+            format!(
+                "recent file list is unexpectedly empty under {}",
+                downloaded_root.display()
+            )
+        })?;
+        let source_dir = sample_path.parent().unwrap_or(downloaded_root.as_path());
+        let looks_like_gallery = download_url.contains("/note/")
+            || download_url.contains("/gallery/")
+            || download_output_text.contains("Gallery aweme");
+        if looks_like_gallery && recent_files.iter().any(|path| is_image_file(path)) {
+            return Err(format!(
+                    "This Douyin link resolves to a gallery post. Assets were downloaded to {}, but the current extraction pipeline only supports videos. Download log: {}",
+                    source_dir.display(),
+                    log_path.display()
+                ));
+        }
+
+        return Err(format!(
+                "The Douyin downloader finished, but no usable video file was produced. Download log: {}",
+                log_path.display()
+            ));
+    };
     let source_dir = downloaded_video.parent().ok_or_else(|| {
         format!(
             "downloaded file has no parent: {}",
@@ -1894,13 +2607,24 @@ fn ingest_douyin_video(source_value: &str, job_root: &Path) -> Result<Vec<String
             "downloaded_video": path_string(&downloaded_video),
             "source_dir": path_string(source_dir),
             "download_log": path_string(&log_path),
+            "reused_existing_download": reused_existing_download,
+            "config_normalizations": normalize_notes,
         }),
     )?;
 
-    Ok(vec![format!(
-        "抖音视频已下载并复制到 {}",
-        copied_video.display()
-    )])
+    let mut notes = normalize_notes;
+    notes.push(if reused_existing_download {
+        format!(
+            "Reused an existing Douyin download and copied it to {}",
+            copied_video.display()
+        )
+    } else {
+        format!(
+            "Downloaded the Douyin video and copied it to {}",
+            copied_video.display()
+        )
+    });
+    Ok(notes)
 }
 
 fn source_video_path(job_root: &Path) -> Result<PathBuf, String> {
@@ -2205,6 +2929,86 @@ fn extract_audio_wav(source_video: &Path, output_path: &Path) -> Result<(), Stri
 fn read_json_value(path: &Path) -> Result<Value, String> {
     let text = read_json_file(path)?;
     serde_json::from_str(&text).map_err(|e| format!("parse {} failed: {e}", path.display()))
+}
+
+fn markdown_list(values: &[String], fallback: &str) -> String {
+    let next = values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("- {value}"))
+        .collect::<Vec<_>>();
+    if next.is_empty() {
+        fallback.to_string()
+    } else {
+        next.join("\n")
+    }
+}
+
+fn display_text_or(value: &str, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn build_manual_material_markdown(draft: &ManualMaterialDraftFile) -> String {
+    let tweak_line = if draft.tweak_labels.is_empty() {
+        "未启用".to_string()
+    } else {
+        draft.tweak_labels.join(" / ")
+    };
+
+    [
+        "# 新视频素材草稿".to_string(),
+        String::new(),
+        format!("- 来源任务 ID: {}", display_text_or(&draft.source_job_id, "未提供")),
+        format!("- 目标平台: {}", display_text_or(&draft.platform_label, "未提供")),
+        format!("- 提示词版本: {}", display_text_or(&draft.version_label, "未提供")),
+        format!("- 优化目标: {}", display_text_or(&draft.focus_label, "未提供")),
+        format!("- 已启用调优: {tweak_line}"),
+        format!("- 最近保存: {}", draft.updated_at_ms),
+        String::new(),
+        "## 主题与人设".to_string(),
+        String::new(),
+        format!("- 主题: {}", display_text_or(&draft.topic, "未填写")),
+        format!("- 受众: {}", display_text_or(&draft.audience, "未填写")),
+        format!("- 人设: {}", display_text_or(&draft.persona, "未填写")),
+        format!("- 气质: {}", display_text_or(&draft.tone, "未填写")),
+        String::new(),
+        "## 口播结构".to_string(),
+        String::new(),
+        format!("- 开场钩子: {}", display_text_or(&draft.hook, "未填写")),
+        markdown_list(&draft.body, "- 正文要点：未填写"),
+        format!("- 收尾: {}", display_text_or(&draft.ending, "未填写")),
+        String::new(),
+        "## 画面与口播提醒".to_string(),
+        String::new(),
+        format!("- visual_brief: {}", display_text_or(&draft.visual_brief, "未填写")),
+        format!("- spoken_brief: {}", display_text_or(&draft.spoken_brief, "未填写")),
+        format!(
+            "- reusable_prompt: {}",
+            display_text_or(&draft.reusable_prompt, "未填写")
+        ),
+        String::new(),
+        "## 标题与文案".to_string(),
+        String::new(),
+        "### 标题候选".to_string(),
+        markdown_list(&draft.title_candidates, "- 暂无标题候选"),
+        String::new(),
+        "### 封面文案".to_string(),
+        markdown_list(&draft.cover_copy_candidates, "- 暂无封面文案"),
+        String::new(),
+        "### 宣传短句".to_string(),
+        markdown_list(&draft.promo_copy, "- 暂无宣传短句"),
+        String::new(),
+        "## 完整提示词".to_string(),
+        String::new(),
+        display_text_or(&draft.full_prompt, "未填写"),
+    ]
+    .join("\n")
 }
 
 fn json_string_field(value: &Value, key: &str) -> String {
@@ -3360,7 +4164,8 @@ fn run_extract_asr_stage(
     }
 
     let endpoint = build_asr_endpoint(settings)?;
-    let transcript = request_transcription(&endpoint, &audio_path).map_err(|e| e.to_string())?;
+    let artifact =
+        request_transcription_artifact(&endpoint, &audio_path).map_err(|e| e.to_string())?;
     let media_probe =
         read_json_value(&job_derived_dir(&item.artifact_dir).join("media_probe.json"))?;
     let duration = media_probe
@@ -3368,25 +4173,72 @@ fn run_extract_asr_stage(
         .and_then(|probe| probe.get("duration_s"))
         .and_then(Value::as_f64)
         .unwrap_or(item.duration_minutes as f64 * 60.0);
+    let transcript = artifact.transcript.trim().to_string();
+    let transcript = if transcript.is_empty() {
+        "none available".to_string()
+    } else {
+        transcript
+    };
+    let segments = asr_segments_json(&artifact, duration, &transcript);
+    if let Some(raw_result) = artifact.raw_result.as_ref() {
+        write_json_file(
+            &job_derived_dir(&item.artifact_dir).join("asr_filetrans_raw.json"),
+            raw_result,
+        )?;
+    }
     write_json_file(
         &asr_path,
         &json!({
-            "provider": endpoint.model,
+            "provider": artifact.provider,
             "status": "completed",
             "transcript": transcript,
-            "segments": [
-                {
-                    "id": "asr_001",
-                    "start_sec": 0.0,
-                    "end_sec": duration,
-                    "speaker": "host",
-                    "text": transcript,
-                    "confidence": 0.9
-                }
-            ],
+            "segments": segments,
         }),
     )?;
-    Ok(vec!["音频转写已完成。".to_string()])
+    let segment_count = artifact.segments.len();
+    let note = if segment_count > 0 {
+        format!(
+            "音频转写已完成（{}，{} 段）。",
+            artifact.provider, segment_count
+        )
+    } else {
+        format!("音频转写已完成（{}）。", artifact.provider)
+    };
+    Ok(vec![note])
+}
+
+fn asr_segments_json(
+    artifact: &TranscriptionArtifact,
+    duration: f64,
+    transcript: &str,
+) -> Vec<Value> {
+    if artifact.segments.is_empty() {
+        return vec![json!({
+            "id": "asr_001",
+            "start_sec": 0.0,
+            "end_sec": duration.max(0.0),
+            "speaker": "host",
+            "text": transcript,
+            "confidence": 0.9
+        })];
+    }
+
+    artifact
+        .segments
+        .iter()
+        .map(|segment| {
+            json!({
+                "id": segment.id,
+                "start_sec": segment.start_sec,
+                "end_sec": segment.end_sec,
+                "speaker": segment.speaker.clone().unwrap_or_else(|| "host".to_string()),
+                "text": segment.text,
+                "confidence": segment.confidence.unwrap_or(0.9),
+                "emotion": segment.emotion,
+                "language": segment.language,
+            })
+        })
+        .collect()
 }
 
 fn run_extract_vision_stage(
@@ -4423,6 +5275,45 @@ impl JobStore {
         read_json_value(&path)
     }
 
+    fn job_manual_material_draft_path(&self, job_id: &str) -> Result<PathBuf, String> {
+        let artifact_dir = self.job_artifact_dir(job_id)?;
+        Ok(manual_material_draft_path(&artifact_dir))
+    }
+
+    fn read_manual_material_draft(&self, job_id: &str) -> Result<Value, String> {
+        let path = self.job_manual_material_draft_path(job_id)?;
+        if !path.is_file() {
+            return Err(format!("任务 {job_id} 的 manual_material_draft 尚未保存。"));
+        }
+        read_json_value(&path)
+    }
+
+    fn save_manual_material_draft(
+        &self,
+        job_id: &str,
+        mut draft: ManualMaterialDraftFile,
+    ) -> Result<ManualMaterialDraftSaveResult, String> {
+        let artifact_dir = self.job_artifact_dir(job_id)?;
+        let updated_at_ms = now_ms();
+        draft.source_job_id = job_id.to_string();
+        draft.updated_at_ms = updated_at_ms;
+
+        let draft_path = manual_material_draft_path(&artifact_dir);
+        let prompt_path = manual_material_prompt_path(&artifact_dir);
+        let markdown_path = manual_material_markdown_path(&artifact_dir);
+
+        write_json_file(&draft_path, &draft)?;
+        write_text_file(&prompt_path, draft.full_prompt.trim())?;
+        write_text_file(&markdown_path, &build_manual_material_markdown(&draft))?;
+
+        Ok(ManualMaterialDraftSaveResult {
+            draft_path: draft_path.display().to_string(),
+            prompt_path: prompt_path.display().to_string(),
+            markdown_path: markdown_path.display().to_string(),
+            updated_at_ms,
+        })
+    }
+
     fn job_competitor_report_path(&self, job_id: &str) -> Result<PathBuf, String> {
         let artifact_dir = self.job_artifact_dir(job_id)?;
         let path = competitor_report_path(&artifact_dir);
@@ -4914,6 +5805,31 @@ fn read_job_material_pack(
 }
 
 #[tauri::command]
+fn read_job_manual_material_draft(
+    job_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, String> {
+    let guard = state
+        .jobs
+        .lock()
+        .map_err(|_| "job queue lock poisoned".to_string())?;
+    guard.read_manual_material_draft(&job_id)
+}
+
+#[tauri::command]
+fn save_job_manual_material_draft(
+    job_id: String,
+    draft: ManualMaterialDraftFile,
+    state: tauri::State<'_, AppState>,
+) -> Result<ManualMaterialDraftSaveResult, String> {
+    let guard = state
+        .jobs
+        .lock()
+        .map_err(|_| "job queue lock poisoned".to_string())?;
+    guard.save_manual_material_draft(&job_id, draft)
+}
+
+#[tauri::command]
 fn read_job_competitor_report(
     job_id: String,
     state: tauri::State<'_, AppState>,
@@ -4945,6 +5861,38 @@ fn open_environment_setup_script() -> Result<String, String> {
     let path = ensure_windows_setup_script()?;
     open_in_explorer(&path, true)?;
     Ok(path.display().to_string())
+}
+
+#[tauri::command]
+fn run_douyin_cookie_login() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let path = ensure_windows_setup_script()?;
+        let path_text = path_string(&path);
+        let mut command = Command::new("cmd.exe");
+        command
+            .arg("/C")
+            .arg("start")
+            .arg("")
+            .arg("powershell.exe")
+            .arg("-NoLogo")
+            .arg("-NoExit")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-File")
+            .arg(&path_text)
+            .arg("-RunCookieLogin");
+        command
+            .spawn()
+            .map_err(|e| format!("launch douyin cookie login failed: {e}"))?;
+        return Ok(format!(
+            "已尝试打开可见的抖音登录终端。首次运行可能会先安装 Playwright / Chromium，随后才弹浏览器。请在弹出的 PowerShell 窗口和浏览器中完成登录，回到终端按 Enter。脚本会在登录成功后自动把 cookies.json 同步回 config.yml，并清空 link。脚本路径：{}",
+            path_text
+        ));
+    }
+
+    #[allow(unreachable_code)]
+    Err("抖音 Cookie 登录目前只支持 Windows。".to_string())
 }
 
 #[tauri::command]
@@ -4998,10 +5946,13 @@ pub fn run() {
             get_dashboard_snapshot,
             read_job_stage_log,
             read_job_material_pack,
+            read_job_manual_material_draft,
+            save_job_manual_material_draft,
             read_job_competitor_report,
             generate_material_prompt,
             check_runtime_environment,
             open_environment_setup_script,
+            run_douyin_cookie_login,
             open_job_artifact_dir,
             open_job_material_pack,
             open_runtime_settings_dir
@@ -5021,7 +5972,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
+        canonical_douyin_media_url, extract_douyin_aweme_id,
         extract_douyin_url_from_share_text, latest_downloaded_video,
+        normalize_downloader_runtime_config, real_cookie_token_names,
         summarize_douyin_download_issue,
     };
     use std::fs;
@@ -5063,6 +6016,24 @@ mod tests {
     }
 
     #[test]
+    fn canonicalizes_share_video_redirect_to_standard_video_url() {
+        let url = "https://www.iesdouyin.com/share/video/7659062783237730222/?region=CN";
+        assert_eq!(
+            canonical_douyin_media_url(url).as_deref(),
+            Some("https://www.douyin.com/video/7659062783237730222")
+        );
+    }
+
+    #[test]
+    fn extracts_aweme_id_from_share_video_url() {
+        let url = "https://www.iesdouyin.com/share/video/7659062783237730222/?region=CN";
+        assert_eq!(
+            extract_douyin_aweme_id(url).as_deref(),
+            Some("7659062783237730222")
+        );
+    }
+
+    #[test]
     fn surfaces_parse_failures_from_downloader_output() {
         let output = "Found 1 URL(s) to process\nFailed to parse URL: 5.89 分享文案";
         let message = summarize_douyin_download_issue(output);
@@ -5081,5 +6052,226 @@ mod tests {
         let result = latest_downloaded_video(&root, started_at);
         assert!(result.is_err());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cookie_token_detection_ignores_placeholders() {
+        let config = r#"
+cookies:
+  msToken: YOUR_MS_TOKEN
+  ttwid: YOUR_TTWID
+  odin_tt: YOUR_ODIN_TT
+  passport_csrf_token: YOUR_CSRF_TOKEN
+"#;
+        assert!(real_cookie_token_names(config).is_empty());
+    }
+
+    #[test]
+    fn syncs_cookie_json_into_placeholder_config() {
+        let dir = unique_temp_dir("cookie_sync");
+        let config_dir = dir.join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_path = dir.join("config.yml");
+        fs::write(
+            &config_path,
+            r#"link:
+  - https://example.com
+cookies:
+  msToken: YOUR_MS_TOKEN
+  ttwid: YOUR_TTWID
+  odin_tt: YOUR_ODIN_TT
+  passport_csrf_token: YOUR_CSRF_TOKEN
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            config_dir.join("cookies.json"),
+            r#"{
+  "msToken": "real_ms",
+  "ttwid": "real_ttwid",
+  "odin_tt": "real_odin",
+  "passport_csrf_token": "real_csrf",
+  "sid_guard": "real_sid"
+}"#,
+        )
+        .unwrap();
+
+        let notes = normalize_downloader_runtime_config(&dir).unwrap();
+        assert!(!notes.is_empty());
+
+        let updated = fs::read_to_string(&config_path).unwrap();
+        assert!(updated.contains("real_ms"));
+        assert!(updated.contains("real_ttwid"));
+        assert!(updated.contains("link: []"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn syncs_cookie_json_into_existing_real_config_when_changed() {
+        let dir = unique_temp_dir("cookie_sync_refresh");
+        let config_dir = dir.join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_path = dir.join("config.yml");
+        fs::write(
+            &config_path,
+            r#"link:
+  - https://legacy.example.com
+cookies:
+  msToken: old_ms
+  ttwid: old_ttwid
+  odin_tt: old_odin
+  passport_csrf_token: old_csrf
+  sid_guard: old_sid
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            config_dir.join("cookies.json"),
+            r#"{
+  "msToken": "new_ms",
+  "ttwid": "new_ttwid",
+  "odin_tt": "new_odin",
+  "passport_csrf_token": "new_csrf",
+  "sid_guard": "new_sid"
+}"#,
+        )
+        .unwrap();
+
+        let notes = normalize_downloader_runtime_config(&dir).unwrap();
+        assert!(!notes.is_empty());
+
+        let updated = fs::read_to_string(&config_path).unwrap();
+        assert!(updated.contains("new_ms"));
+        assert!(updated.contains("new_ttwid"));
+        assert!(!updated.contains("old_ms"));
+        assert!(updated.contains("link: []"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn normalizes_multi_document_config_before_sync() {
+        let dir = unique_temp_dir("cookie_sync_multidoc");
+        let config_dir = dir.join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_path = dir.join("config.yml");
+        fs::write(
+            &config_path,
+            r#"link:
+  - https://legacy.example.com
+cookies:
+  msToken: old_ms
+  ttwid: old_ttwid
+  odin_tt: old_odin
+  passport_csrf_token: old_csrf
+---
+link:
+  - https://second.example.com
+cookies:
+  msToken: YOUR_MS_TOKEN
+  ttwid: YOUR_TTWID
+  odin_tt: YOUR_ODIN_TT
+  passport_csrf_token: YOUR_CSRF_TOKEN
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            config_dir.join("cookies.json"),
+            r#"{
+  "msToken": "new_ms",
+  "ttwid": "new_ttwid",
+  "odin_tt": "new_odin",
+  "passport_csrf_token": "new_csrf"
+}"#,
+        )
+        .unwrap();
+
+        let notes = normalize_downloader_runtime_config(&dir).unwrap();
+        assert!(notes.iter().any(|note| note.contains("多段 YAML")));
+
+        let updated = fs::read_to_string(&config_path).unwrap();
+        assert_eq!(updated.matches("---").count(), 1);
+        assert!(updated.contains("new_ms"));
+        assert!(updated.contains("link: []"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn normalizes_legacy_empty_link_block() {
+        let dir = unique_temp_dir("cookie_sync_empty_link");
+        fs::create_dir_all(&dir).unwrap();
+
+        let config_path = dir.join("config.yml");
+        fs::write(
+            &config_path,
+            "link:\n  []\n\npath: ./Downloaded/\n\ncookies:\n  msToken: YOUR_MS_TOKEN\n",
+        )
+        .unwrap();
+
+        let notes = normalize_downloader_runtime_config(&dir).unwrap();
+        assert!(notes.iter().any(|note| note.contains("空 link")));
+
+        let updated = fs::read_to_string(&config_path).unwrap();
+        assert!(updated.contains("link: []"));
+        assert!(!updated.contains("link:\n  []"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn normalizes_utf8_bom_prefix() {
+        let dir = unique_temp_dir("cookie_sync_bom");
+        fs::create_dir_all(&dir).unwrap();
+
+        let config_path = dir.join("config.yml");
+        fs::write(
+            &config_path,
+            b"\xEF\xBB\xBFlink: []\n\npath: ./Downloaded/\n\ncookies:\n  msToken: YOUR_MS_TOKEN\n",
+        )
+        .unwrap();
+
+        let notes = normalize_downloader_runtime_config(&dir).unwrap();
+        assert!(notes.iter().any(|note| note.contains("UTF-8 BOM")));
+
+        let updated = fs::read(&config_path).unwrap();
+        assert!(!updated.starts_with(&[0xEF, 0xBB, 0xBF]));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforces_safe_windows_download_layout() {
+        let dir = unique_temp_dir("safe_layout");
+        fs::create_dir_all(&dir).unwrap();
+
+        let config_path = dir.join("config.yml");
+        fs::write(
+            &config_path,
+            r#"link: []
+path: ./Downloaded/
+folderstyle: true
+filename_template: "{date}_{title}_{id}"
+folder_template: "{date}_{title}_{id}"
+"#,
+        )
+        .unwrap();
+
+        let notes = normalize_downloader_runtime_config(&dir).unwrap();
+        assert!(!notes.is_empty());
+
+        let updated = fs::read_to_string(&config_path).unwrap();
+        assert!(updated.contains("folderstyle: false"));
+        assert!(updated.contains(r#"filename_template: '{date}_{id}'"#));
+        assert!(updated.contains(r#"folder_template: '{date}_{id}'"#));
+
+        let _ = fs::remove_dir_all(dir);
     }
 }
