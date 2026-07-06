@@ -30,10 +30,21 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - name: Checkout douyin-downloader
+        uses: actions/checkout@v4
+        with:
+          repository: jiji262/douyin-downloader
+          path: douyin-downloader
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -43,6 +54,22 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: choco install ffmpeg --yes --no-progress
+
+      - name: Install Playwright bootstrap
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install playwright
+          python -m playwright install chromium
+
+      - name: Prepare bundled Windows runtime
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\scripts\prepare_windows_bundle.ps1 -DownloaderDir .\douyin-downloader
 
       - name: Resolve release metadata
         id: meta
