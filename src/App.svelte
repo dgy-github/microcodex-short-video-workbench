@@ -2,12 +2,14 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onDestroy, onMount, tick } from "svelte";
+  import StoryPlanner from "./StoryPlanner.svelte";
 
   type PageKey =
     | "dashboard"
     | "new-job"
     | "queue"
     | "material"
+    | "story-planner"
     | "review"
     | "competitor"
     | "settings";
@@ -386,6 +388,7 @@
     { key: "new-job", title: "新建任务", kicker: "Create", icon: "+" },
     { key: "queue", title: "批量队列", kicker: "Queue", icon: "Q" },
     { key: "material", title: "素材包编辑", kicker: "Assets", icon: "M" },
+    { key: "story-planner", title: "长视频章节", kicker: "Chapters", icon: "P" },
     { key: "review", title: "成片复盘", kicker: "Review", icon: "R" },
     { key: "competitor", title: "竞品分析", kicker: "Compare", icon: "C" },
     { key: "settings", title: "配置中心", kicker: "Settings", icon: "S" },
@@ -846,6 +849,8 @@
   let lastMaterialPromptSignature = "";
   let materialPromptRewriteSeq = 0;
   let materialPromptRewriteTimer: ReturnType<typeof setTimeout> | null = null;
+  let materialPromptCopyTimer: ReturnType<typeof setTimeout> | null = null;
+  let materialPromptCopied = false;
   let promptPlatform: PromptPlatformKey = "generic";
   let promptVersion: PromptVersionKey = "full";
   let promptFocus: PromptFocusKey = "balanced";
@@ -961,8 +966,16 @@
     }
   }
 
+  function clearMaterialPromptCopyTimer() {
+    if (materialPromptCopyTimer) {
+      clearTimeout(materialPromptCopyTimer);
+      materialPromptCopyTimer = null;
+    }
+  }
+
   onDestroy(() => {
     clearMaterialPromptRewriteTimer();
+    clearMaterialPromptCopyTimer();
   });
 
   function jobModeLabel(mode: JobMode): string {
@@ -2259,6 +2272,30 @@
     }
   }
 
+  async function copyMaterialPrompt() {
+    const prompt = materialPromptText.trim();
+    if (!prompt) {
+      materialTone = "warn";
+      materialMessage = "当前没有可复制的完整提示词。";
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(prompt);
+      materialPromptCopied = true;
+      materialTone = "good";
+      materialMessage = "完整提示词已复制到剪贴板。";
+      clearMaterialPromptCopyTimer();
+      materialPromptCopyTimer = setTimeout(() => {
+        materialPromptCopied = false;
+        materialPromptCopyTimer = null;
+      }, 1800);
+    } catch (error) {
+      materialPromptCopied = false;
+      materialTone = "warn";
+      materialMessage = `复制完整提示词失败：${stringifyError(error)}`;
+    }
+  }
+
   function queueMaterialPromptRewrite() {
     if (!materialPack) return;
     clearMaterialPromptRewriteTimer();
@@ -2478,7 +2515,7 @@
   }
 
   $: if (
-    currentPage === "material" &&
+    (currentPage === "material" || currentPage === "story-planner") &&
     selectedMaterialJobId &&
     selectedMaterialJobId !== loadedMaterialJobId &&
     !loadingMaterialPack
@@ -3279,7 +3316,17 @@
                       <div class="kv"><div class="k">本次用量</div><div class="v">Prompt {materialPromptUsage.promptTokens} / Completion {materialPromptUsage.completionTokens} / Total {materialPromptUsage.totalTokens}</div></div>
                       <div class="kv"><div class="k">本次成本</div><div class="v">{formatCurrency(materialPromptUsage.costCny)}</div></div>
                     {/if}
-                    <div class="section-label">完整提示词</div>
+                    <div class="prompt-section-head">
+                      <div class="section-label">完整提示词</div>
+                      <button
+                        type="button"
+                        class="btn prompt-copy-btn"
+                        disabled={!materialPromptText.trim()}
+                        on:click={() => void copyMaterialPrompt()}
+                      >
+                        {materialPromptCopied ? "已复制" : "一键复制"}
+                      </button>
+                    </div>
                     <div class="code-block prompt-block">{materialPromptText}</div>
                     <div class="section-label">素材包内置草稿</div>
                     <div class="code-block prompt-block">{buildPromptDraftBlock(materialPack)}</div>
@@ -3432,6 +3479,51 @@
               {:else}
                 <div class="empty-state">当前任务的素材包还没有准备好。</div>
               {/if}
+            </div>
+          </div>
+
+        </section>
+      {/if}
+
+      {#if currentPage === "story-planner"}
+        <section class="page-grid">
+          <div class="page-header">
+            <div>
+              <h2>长视频章节</h2>
+              <p>把提炼提示词或粘贴文本拆分、重写为连续的多章节成稿，并汇总复制。</p>
+            </div>
+            {#if materialJobs.length}
+              <div class="actions material-header-actions">
+                <select class="material-select" bind:value={selectedMaterialJobId} aria-label="选择提示词来源素材包">
+                  {#each materialJobs as job}
+                    <option value={job.id}>{job.name}</option>
+                  {/each}
+                </select>
+                <button
+                  type="button"
+                  class="btn"
+                  disabled={!selectedMaterialJob}
+                  on:click={() => selectedMaterialJob && void openJobArtifactDir(selectedMaterialJob)}
+                >
+                  打开任务目录
+                </button>
+              </div>
+            {/if}
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h3>分章节重写与连续性控制</h3>
+              <div class="small muted">独立模块 · 支持素材包带入和手工粘贴</div>
+            </div>
+            <div class="panel-body">
+              <StoryPlanner
+                sourcePrompt={manualMaterialDraft?.fullPrompt || materialPromptText || ""}
+                sourceJobId={selectedMaterialJobId}
+                textTier={selectedMaterialJob?.textTier ?? settings?.textProvider.defaultTier ?? "flash"}
+                hasApiKey={settings?.textProvider.hasApiKey ?? false}
+                perJobBudgetCny={settings?.budget.perJobCny ?? 0}
+              />
             </div>
           </div>
         </section>

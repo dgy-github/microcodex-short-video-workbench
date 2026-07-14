@@ -1,3 +1,5 @@
+mod story_planner;
+
 use ncx_video_agent::{
     encode_frame, extract_keyframes, extract_keyframes_scaled, request_reverse_prompt,
     request_subtitle_ocr, request_transcription_artifact, validate_video_file_l0, AsrEndpoint,
@@ -7,6 +9,7 @@ use reqwest::{blocking::Client, header::LOCATION, redirect::Policy, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
+use std::error::Error;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -16,6 +19,11 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
+use story_planner::{
+    build_local_plan, estimated_token_budget, merge_ai_plan, render_markdown, validate_request,
+    StoryPlan, StoryPlanRequest, StoryPlanningBudget,
+};
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -23,9 +31,11 @@ const APP_DIR_NAME: &str = "MicrocodeXShortVideo";
 const SETTINGS_SCHEMA_VERSION: u32 = 1;
 const JOBS_SCHEMA_VERSION: u32 = 1;
 const USAGE_SCHEMA_VERSION: u32 = 1;
-const DEFAULT_DEEPSEEK_URL: &str = "https://api.deepseek.com/beta";
+const DEFAULT_DEEPSEEK_URL: &str = "https://api.deepseek.com";
+const LEGACY_DEEPSEEK_BETA_URL: &str = "https://api.deepseek.com/beta";
 const DEFAULT_VISION_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const DEFAULT_FLASH_MODEL: &str = "deepseek-chat";
+const DEFAULT_FLASH_MODEL: &str = "deepseek-v4-flash";
+const LEGACY_FLASH_MODEL: &str = "deepseek-chat";
 const DEFAULT_PRO_MODEL: &str = "deepseek-v4-pro";
 const DEFAULT_VISION_MODEL: &str = "qwen3-vl-plus";
 const DEFAULT_ASR_MODEL: &str = "qwen3-asr-flash";
@@ -595,6 +605,14 @@ struct MaterialPromptRewriteResult {
     cost_cny: f64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoryPlanSaveResult {
+    json_path: String,
+    markdown_path: String,
+    saved_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UsageEvent {
@@ -709,7 +727,22 @@ fn hydrate_settings_from_external(mut settings: RuntimeSettingsFile) -> RuntimeS
     if settings.vision_provider.model.trim().is_empty() {
         settings.vision_provider.model = seeded_vl_model;
     }
+    migrate_official_deepseek_presets(&mut settings);
     settings
+}
+
+fn migrate_official_deepseek_presets(settings: &mut RuntimeSettingsFile) {
+    for preset in [
+        &mut settings.text_provider.presets.flash,
+        &mut settings.text_provider.presets.pro,
+    ] {
+        if preset.base_url.trim_end_matches('/') == LEGACY_DEEPSEEK_BETA_URL {
+            preset.base_url = DEFAULT_DEEPSEEK_URL.to_string();
+        }
+    }
+    if settings.text_provider.presets.flash.model.trim() == LEGACY_FLASH_MODEL {
+        settings.text_provider.presets.flash.model = DEFAULT_FLASH_MODEL.to_string();
+    }
 }
 
 fn default_settings_envelope() -> RuntimeSettingsEnvelope {
@@ -2337,7 +2370,8 @@ fn expand_douyin_download_url(url: &str) -> Result<String, String> {
         .redirect(Policy::none())
         .build()
         .map_err(|e| format!("build douyin short-link client failed: {e}"))?;
-    let mut current = Url::parse(url).map_err(|e| format!("parse douyin short-link failed: {e}"))?;
+    let mut current =
+        Url::parse(url).map_err(|e| format!("parse douyin short-link failed: {e}"))?;
 
     for _ in 0..8 {
         let response = client
@@ -2821,6 +2855,19 @@ fn chat_completions_url(base_url: &str) -> String {
     format!("{}/chat/completions", base_url.trim_end_matches('/'))
 }
 
+fn describe_request_error(label: &str, error: &reqwest::Error) -> String {
+    let mut details = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let detail = cause.to_string();
+        if !detail.is_empty() && !details.iter().any(|existing| existing == &detail) {
+            details.push(detail);
+        }
+        source = cause.source();
+    }
+    format!("{label}: {}", details.join(" -> "))
+}
+
 fn request_structured_competitor_report(
     endpoint: &TextEndpoint,
     payload: &Value,
@@ -2979,6 +3026,141 @@ fn request_material_prompt_rewrite(
     })
 }
 
+fn estimate_story_planning_budget(
+    settings: &RuntimeSettingsFile,
+    request: &StoryPlanRequest,
+) -> StoryPlanningBudget {
+    let (prompt_tokens, completion_tokens) = estimated_token_budget(request);
+    let usage = LlmUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens.saturating_add(completion_tokens),
+    };
+    let estimated_cost_cny = text_usage_cost_cny(settings, &request.text_tier, &usage);
+    StoryPlanningBudget {
+        estimated_prompt_tokens: prompt_tokens,
+        estimated_completion_tokens: completion_tokens,
+        actual_prompt_tokens: 0,
+        actual_completion_tokens: 0,
+        estimated_cost_cny,
+        actual_cost_cny: 0.0,
+        budget_limit_cny: settings.budget.per_job_cny,
+        exceeds_budget: estimated_cost_cny > settings.budget.per_job_cny,
+    }
+}
+
+fn request_story_plan_rewrite(
+    endpoint: &TextEndpoint,
+    settings: &RuntimeSettingsFile,
+    request: &StoryPlanRequest,
+    budget: StoryPlanningBudget,
+) -> Result<StoryPlan, String> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(150))
+        .http1_only()
+        .build()
+        .map_err(|e| format!("build story planner client failed: {e}"))?;
+    let url = chat_completions_url(&endpoint.base_url);
+    let max_tokens = (request.act_count.saturating_mul(900) + 900).min(12_000);
+    let body = json!({
+        "model": endpoint.model,
+        "temperature": 0.3,
+        "max_tokens": max_tokens,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是一名长视频分章节内容重写师。把输入提示词按指定总时长和幕数拆分，并为每一幕写出完整、可直接使用的重写正文。userRequirements 是用户用自然语言提出的重新设计要求，必须先理解其真实意图，再将其作为高优先级约束重构章节功能、冲突、节奏、风格、人物表现和结尾；但不得破坏总时长、章节数和跨章连续性。只输出严格 JSON，不要 markdown。rewrittenPrompt 必须是该幕已经写好的具体内容，不得写成规划建议、写作策略、待办事项或‘围绕某内容展开’之类的说明；它需要包含本幕发生的具体事件、人物动作、画面推进、情绪变化和章节落点。narrationOutline 必须给出本幕可直接使用的口播或对白内容。每幕必须包含 title、dramaticFunction、chapterGoal、rewrittenPrompt、narrationOutline、openingFrame、closingFrame、transition。还必须输出 continuityBible，包含 characterAnchor、wardrobeAnchor、settingAnchor、visualStyleAnchor、cameraAnchor、immutableRules。人物身份、外貌、服装、道具、空间位置、时间、天气、光线方向和镜头轴线必须跨幕连续。第 N 幕 closingFrame 必须能原样成为第 N+1 幕 openingFrame。不要输出预算、时间码、字数和镜头数，这些由程序统一计算。"
+            },
+            {
+                "role": "user",
+                "content": json!({
+                    "task": "把 sourcePrompt 拆分并重写为连续的分章节成稿，每一幕都要给出已经写好的具体内容。",
+                    "targetDurationSeconds": request.target_duration_seconds,
+                    "actCount": request.act_count,
+                    "sourcePrompt": request.source_prompt,
+                    "userRequirements": request.user_requirements,
+                    "requiredJsonShape": {
+                        "title": "规划标题",
+                        "sourceSummary": "原始提示词摘要",
+                        "continuityBible": {
+                            "characterAnchor": "人物固定锚点",
+                            "wardrobeAnchor": "服装固定锚点",
+                            "settingAnchor": "场景空间锚点",
+                            "visualStyleAnchor": "视觉风格锚点",
+                            "cameraAnchor": "镜头轴线锚点",
+                            "immutableRules": ["不可破坏的连续性规则"]
+                        },
+                        "acts": [{
+                            "index": 1,
+                            "title": "章节标题",
+                            "dramaticFunction": "开端/发展/转折/高潮/收束",
+                            "chapterGoal": "本幕剧情任务",
+                            "rewrittenPrompt": "本幕已经重写完成的具体章节正文，不是规划说明",
+                            "narrationOutline": "本幕可直接使用的口播或对白内容",
+                            "openingFrame": "本幕第一帧的精确描述",
+                            "closingFrame": "本幕最后一帧的精确描述",
+                            "transition": "进入下一幕的动作与镜头承接"
+                        }]
+                    }
+                }).to_string()
+            }
+        ]
+    });
+
+    let response = client
+        .post(url)
+        .bearer_auth(&endpoint.api_key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .map_err(|e| describe_request_error("request DeepSeek story plan failed", &e))?;
+    let status = response.status();
+    let response_text = response
+        .text()
+        .map_err(|e| format!("read DeepSeek story plan response failed: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "DeepSeek story plan failed: HTTP {} {}",
+            status, response_text
+        ));
+    }
+
+    let parsed: ChatCompletionResponse = serde_json::from_str(&response_text)
+        .map_err(|e| format!("parse story plan completion failed: {e}; body={response_text}"))?;
+    let content = parsed
+        .choices
+        .first()
+        .map(|choice| choice.message.content.trim())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "DeepSeek story plan returned empty content.".to_string())?;
+    let ai_plan: StoryPlan = serde_json::from_str(content)
+        .map_err(|e| format!("parse structured story plan failed: {e}; content={content}"))?;
+    let actual_cost_cny = text_usage_cost_cny(settings, &request.text_tier, &parsed.usage);
+    let mut actual_budget = budget;
+    actual_budget.actual_prompt_tokens = parsed.usage.prompt_tokens;
+    actual_budget.actual_completion_tokens = parsed.usage.completion_tokens;
+    actual_budget.actual_cost_cny = actual_cost_cny;
+    actual_budget.exceeds_budget = actual_cost_cny > actual_budget.budget_limit_cny;
+
+    let event = UsageEvent {
+        id: format!("usage_{}", now_ms()),
+        feature: "story_plan_rewrite".to_string(),
+        model: endpoint.model.clone(),
+        text_tier: normalize_tier(&request.text_tier).to_string(),
+        prompt_tokens: parsed.usage.prompt_tokens,
+        completion_tokens: parsed.usage.completion_tokens,
+        total_tokens: parsed.usage.total_tokens,
+        cost_cny: actual_cost_cny,
+        created_at_ms: now_ms(),
+    };
+    if let Err(err) = append_usage_event(event) {
+        eprintln!("append story planner usage event failed: {err}");
+    }
+
+    merge_ai_plan(request, ai_plan, actual_budget, &endpoint.model, now_ms())
+}
+
 fn extract_audio_wav(source_video: &Path, output_path: &Path) -> Result<(), String> {
     ensure_parent(output_path)?;
     if output_path.exists() {
@@ -3052,10 +3234,22 @@ fn build_manual_material_markdown(draft: &ManualMaterialDraftFile) -> String {
     [
         "# 新视频素材草稿".to_string(),
         String::new(),
-        format!("- 来源任务 ID: {}", display_text_or(&draft.source_job_id, "未提供")),
-        format!("- 目标平台: {}", display_text_or(&draft.platform_label, "未提供")),
-        format!("- 提示词版本: {}", display_text_or(&draft.version_label, "未提供")),
-        format!("- 优化目标: {}", display_text_or(&draft.focus_label, "未提供")),
+        format!(
+            "- 来源任务 ID: {}",
+            display_text_or(&draft.source_job_id, "未提供")
+        ),
+        format!(
+            "- 目标平台: {}",
+            display_text_or(&draft.platform_label, "未提供")
+        ),
+        format!(
+            "- 提示词版本: {}",
+            display_text_or(&draft.version_label, "未提供")
+        ),
+        format!(
+            "- 优化目标: {}",
+            display_text_or(&draft.focus_label, "未提供")
+        ),
         format!("- 已启用调优: {tweak_line}"),
         format!("- 最近保存: {}", draft.updated_at_ms),
         String::new(),
@@ -3074,8 +3268,14 @@ fn build_manual_material_markdown(draft: &ManualMaterialDraftFile) -> String {
         String::new(),
         "## 画面与口播提醒".to_string(),
         String::new(),
-        format!("- visual_brief: {}", display_text_or(&draft.visual_brief, "未填写")),
-        format!("- spoken_brief: {}", display_text_or(&draft.spoken_brief, "未填写")),
+        format!(
+            "- visual_brief: {}",
+            display_text_or(&draft.visual_brief, "未填写")
+        ),
+        format!(
+            "- spoken_brief: {}",
+            display_text_or(&draft.spoken_brief, "未填写")
+        ),
         format!(
             "- reusable_prompt: {}",
             display_text_or(&draft.reusable_prompt, "未填写")
@@ -5939,6 +6139,69 @@ fn generate_material_prompt(
 }
 
 #[tauri::command]
+fn generate_story_plan(request: StoryPlanRequest) -> Result<StoryPlan, String> {
+    validate_request(&request)?;
+    let settings = load_settings_envelope()?.settings;
+    let budget = estimate_story_planning_budget(&settings, &request);
+    if settings.text_provider.api_key.trim().is_empty() {
+        return build_local_plan(&request, budget, now_ms());
+    }
+    if budget.exceeds_budget && settings.budget.block_when_over_budget {
+        return Err(format!(
+            "章节规划预估成本 ¥{:.4}，超过单任务预算 ¥{:.2}，已按预算策略阻止调用。",
+            budget.estimated_cost_cny, budget.budget_limit_cny
+        ));
+    }
+    let endpoint = build_text_endpoint_for_tier(&settings, &request.text_tier)?;
+    match request_story_plan_rewrite(&endpoint, &settings, &request, budget.clone()) {
+        Ok(plan) => Ok(plan),
+        Err(error) => {
+            let mut fallback = build_local_plan(&request, budget, now_ms())?;
+            fallback.generated_by_model = "本地章节规划器（在线模型回退）".to_string();
+            fallback.generation_warning = format!("在线模型调用失败，已生成本地草稿：{error}");
+            Ok(fallback)
+        }
+    }
+}
+
+#[tauri::command]
+fn save_story_plan(
+    plan: StoryPlan,
+    source_job_id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<StoryPlanSaveResult, String> {
+    let saved_at_ms = now_ms();
+    let output_dir = if let Some(job_id) = source_job_id.filter(|value| !value.trim().is_empty()) {
+        let guard = state
+            .jobs
+            .lock()
+            .map_err(|_| "job queue lock poisoned".to_string())?;
+        guard
+            .job_artifact_dir(&job_id)?
+            .join("output")
+            .join("story_plans")
+    } else {
+        app_config_dir()?.join("story-plans")
+    };
+    fs::create_dir_all(&output_dir)
+        .map_err(|e| format!("create story plan output directory failed: {e}"))?;
+    let file_stem = format!("story_plan_{saved_at_ms}");
+    let json_path = output_dir.join(format!("{file_stem}.json"));
+    let markdown_path = output_dir.join(format!("{file_stem}.md"));
+    let json_text = serde_json::to_string_pretty(&plan)
+        .map_err(|e| format!("serialize story plan failed: {e}"))?;
+    fs::write(&json_path, json_text)
+        .map_err(|e| format!("write {} failed: {e}", json_path.display()))?;
+    fs::write(&markdown_path, render_markdown(&plan))
+        .map_err(|e| format!("write {} failed: {e}", markdown_path.display()))?;
+    Ok(StoryPlanSaveResult {
+        json_path: path_string(&json_path),
+        markdown_path: path_string(&markdown_path),
+        saved_at_ms,
+    })
+}
+
+#[tauri::command]
 fn check_runtime_environment() -> Result<EnvironmentHealthReport, String> {
     let settings = load_settings_envelope()?.settings;
     build_environment_report(&settings)
@@ -6038,6 +6301,8 @@ pub fn run() {
             save_job_manual_material_draft,
             read_job_competitor_report,
             generate_material_prompt,
+            generate_story_plan,
+            save_story_plan,
             check_runtime_environment,
             open_environment_setup_script,
             run_douyin_cookie_login,
@@ -6061,10 +6326,11 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_douyin_media_url, extract_douyin_aweme_id,
-        extract_douyin_url_from_share_text, latest_downloaded_video,
+        canonical_douyin_media_url, extract_douyin_aweme_id, extract_douyin_url_from_share_text,
+        latest_downloaded_video, migrate_official_deepseek_presets,
         normalize_downloader_runtime_config, real_cookie_token_names,
-        summarize_douyin_download_issue,
+        summarize_douyin_download_issue, DEFAULT_DEEPSEEK_URL, DEFAULT_FLASH_MODEL,
+        LEGACY_DEEPSEEK_BETA_URL, LEGACY_FLASH_MODEL,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -6082,6 +6348,27 @@ mod tests {
                 .as_nanos()
         ));
         dir
+    }
+
+    #[test]
+    fn migrates_legacy_deepseek_beta_presets() {
+        let mut settings = super::default_settings();
+        settings.text_provider.presets.flash.base_url = LEGACY_DEEPSEEK_BETA_URL.to_string();
+        settings.text_provider.presets.pro.base_url = format!("{LEGACY_DEEPSEEK_BETA_URL}/");
+        settings.text_provider.presets.flash.model = LEGACY_FLASH_MODEL.to_string();
+        migrate_official_deepseek_presets(&mut settings);
+        assert_eq!(
+            settings.text_provider.presets.flash.base_url,
+            DEFAULT_DEEPSEEK_URL
+        );
+        assert_eq!(
+            settings.text_provider.presets.pro.base_url,
+            DEFAULT_DEEPSEEK_URL
+        );
+        assert_eq!(
+            settings.text_provider.presets.flash.model,
+            DEFAULT_FLASH_MODEL
+        );
     }
 
     #[test]

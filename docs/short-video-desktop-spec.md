@@ -83,9 +83,10 @@
 |         | 2. 新建任务                                          |
 |         | 3. 批量队列                                          |
 |         | 4. 素材包编辑                                        |
-|         | 5. 成片复盘                                          |
-|         | 6. 竞品分析                                          |
-|         | 7. 配置中心                                          |
+|         | 5. 长视频章节                                        |
+|         | 6. 成片复盘                                          |
+|         | 7. 竞品分析                                          |
+|         | 8. 配置中心                                          |
 +---------+-----------------------------------------------------+
 | 主内容区                                                     |
 | - 导入表单 / 任务进度 / 素材包 / 报告预览 / 成本明细           |
@@ -188,6 +189,21 @@
 - 恢复机器原稿
 - 版本记录
 
+#### 长视频章节规划契约
+
+素材包中的完整提示词或用户粘贴的故事底稿可进一步拆分为连续章节：
+
+- 该能力必须作为左侧导航中的独立业务模块，不嵌套在素材包编辑页内部
+
+- 输入总时长范围：30 秒到 30 分钟
+- 输入章节范围：2 到 12 幕，默认 3 分钟 / 5 幕
+- 可选输入自然语言创作要求；模型必须先理解意图，再据此重构章节内容，不得仅把要求原样拼接到输出
+- 每幕输出：剧情任务、重写提示词、口播提纲、时长预算、口播字数预算、镜头预算、首帧、尾帧和转场
+- 后端必须强制满足 `第 N 幕尾帧 == 第 N+1 幕首帧`
+- 全片必须单独维护人物、服装、场景空间、视觉风格和镜头轴线锚点
+- 文本模型规划调用必须复用现有 Flash / Pro 路由、用量台账和单任务预算策略
+- 未配置文本 Key 时允许生成确定性的本地草稿；保存时按时间戳创建 JSON 与 Markdown 新版本，不覆盖旧稿
+
 最重要的要求：
 
 - 原始事实和优化建议必须分开展示
@@ -252,11 +268,11 @@
 固定预设：
 
 - Flash:
-  - `model = deepseek-chat`
-  - `base_url = https://api.deepseek.com/beta`
+  - `model = deepseek-v4-flash`
+  - `base_url = https://api.deepseek.com`
 - Pro:
   - `model = deepseek-v4-pro`
-  - `base_url = https://api.deepseek.com/beta`
+  - `base_url = https://api.deepseek.com`
 
 用户可填：
 
@@ -397,7 +413,7 @@ estimated_vl_tokens =
 
 - `deepseek-v4-pro`
 - `deepseek-v4-flash`
-- `deepseek-chat`
+- `deepseek-v4-flash`
 - `deepseek-reasoner`
 
 桌面端应该复用这个逻辑，不要在前端单独再算一套。
@@ -447,12 +463,12 @@ estimated_vl_tokens =
     "api_key": "",
     "presets": {
       "flash": {
-        "model": "deepseek-chat",
-        "base_url": "https://api.deepseek.com/beta"
+        "model": "deepseek-v4-flash",
+        "base_url": "https://api.deepseek.com"
       },
       "pro": {
         "model": "deepseek-v4-pro",
-        "base_url": "https://api.deepseek.com/beta"
+        "base_url": "https://api.deepseek.com"
       }
     }
   },
@@ -572,15 +588,15 @@ estimated_vl_tokens =
 ### 11.1 默认规则
 
 - 默认文本档位：`Flash`
-- 默认模型：`deepseek-chat`
-- 默认 URL：`https://api.deepseek.com/beta`
+- 默认模型：`deepseek-v4-flash`
+- 默认 URL：`https://api.deepseek.com`
 
 ### 11.2 切换到 Pro 时
 
 自动改为：
 
 - `model = deepseek-v4-pro`
-- `base_url = https://api.deepseek.com/beta`
+- `base_url = https://api.deepseek.com`
 
 ### 11.3 切换 URI 类型时
 

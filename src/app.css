@@ -684,6 +684,17 @@ button:disabled {
   overflow: auto;
 }
 
+.prompt-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.prompt-copy-btn {
+  min-width: 84px;
+}
+
 .manual-draft-surface {
   padding: 14px;
   border: 1px solid var(--line);

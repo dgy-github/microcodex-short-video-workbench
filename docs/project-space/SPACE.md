@@ -69,7 +69,7 @@ Only two primary model lanes are allowed in v1:
 Default routing:
 
 - visual analysis -> `qwen3-vl-plus`
-- text understanding -> `deepseek-chat` by default
+- text understanding -> `deepseek-v4-flash` by default
 - quality override -> `deepseek-v4-pro` when the operator switches tier
 
 ## Repo separation rule
